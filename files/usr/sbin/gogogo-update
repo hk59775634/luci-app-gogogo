@@ -1,0 +1,336 @@
+#!/bin/sh
+# 方案 B：manifest + ipk + sha256，无感升级（kill 进程，不 gogogo stop）
+# 三路径并行拉 manifest，失败忽略，取成功结果中版本号最新者
+
+[ -f /usr/share/gogogo/defaults.sh ] && . /usr/share/gogogo/defaults.sh
+[ -f /usr/share/gogogo/curl-resolve.sh ] && . /usr/share/gogogo/curl-resolve.sh
+
+CPE_PKG_NAME="${CPE_PKG_NAME:-luci-app-gogogo}"
+CPE_SERVICE="${CPE_SERVICE:-gogogo}"
+UPDATE_MANIFEST="${CPE_UPDATE_MANIFEST:-/software/gogogo/version.json}"
+GITHUB_MANIFEST_PATH="${CPE_GITHUB_MANIFEST_PATH:-${CPE_GITHUB_RAW_MANIFEST:-main/release/version.json}}"
+UPDATE_LOCK="/tmp/gogogo_update.lock"
+UPDATE_IPK="/tmp/gogogo_update.ipk"
+CURL_TIMEOUT="${CURL_TIMEOUT:-10}"
+
+_log() {
+	echo "gogogo-update: $*" >&2
+}
+
+_abs_url() {
+	local base="$1" path="$2"
+	case "$path" in
+		http://*|https://*) echo "$path" ;;
+		/*) echo "${base%/}${path}" ;;
+		*) echo "${base%/}/${path}" ;;
+	esac
+}
+
+_github_repo() {
+	echo "${CPE_GITHUB_REPO:-}" | sed 's|^/||;s|/*$||'
+}
+
+_github_mirror_prefix() {
+	local mirror repo
+	mirror=$(echo "${CPE_GITHUB_MIRROR:-}" | sed 's|/*$||')
+	repo=$(_github_repo)
+	[ -n "$mirror" ] && [ -n "$repo" ] || return 1
+	echo "${mirror}/${repo}"
+}
+
+_github_raw_prefix() {
+	local repo
+	repo=$(_github_repo)
+	[ -n "$repo" ] || return 1
+	echo "https://raw.githubusercontent.com/${repo}"
+}
+
+_github_release_prefix() {
+	local repo
+	repo=$(_github_repo)
+	[ -n "$repo" ] || return 1
+	echo "https://github.com/${repo}"
+}
+
+# Release 附件 manifest（main/blob 缓存滞后时；从高序号向下探测，命中即停）
+_probe_release_manifests() {
+	local prefix="$1" src_kind="$2" day tag manifest i
+
+	[ -n "$prefix" ] || return 0
+	for day in $(date +%Y%m%d) $(date -d "@$(($(date +%s) - 86400))" +%Y%m%d 2>/dev/null); do
+		[ -n "$day" ] || continue
+		i=99
+		while [ "$i" -ge 0 ]; do
+			tag=$(printf "v%s%02d" "$day" "$i")
+			manifest=$(_fetch_manifest "$prefix" "releases/download/${tag}/version.json")
+			if _candidate_add "${src_kind}:${prefix}" "$manifest"; then
+				return 0
+			fi
+			i=$((i - 1))
+		done
+	done
+	return 1
+}
+
+_release_tag() {
+	case "$1" in
+		v*) echo "$1" ;;
+		*) echo "v$1" ;;
+	esac
+}
+
+_installed_version() {
+	local v ctrl="/usr/lib/opkg/info/${CPE_PKG_NAME}.control"
+	v=$(opkg list-installed "$CPE_PKG_NAME" 2>/dev/null | awk '{print $3}')
+	[ -n "$v" ] || v=$(grep '^Version:' "$ctrl" 2>/dev/null | awk '{print $2}')
+	echo "$v" | sed 's/-.*//'
+}
+
+# 版本相同时优先用国内加速下 ipk（mirror > github > base）
+_source_rank() {
+	case "$1" in
+		mirror:*) echo 3 ;;
+		github:*) echo 2 ;;
+		base:*) echo 1 ;;
+		*) echo 0 ;;
+	esac
+}
+
+_version_gt() {
+	local new="$1" old="$2"
+	[ -n "$new" ] && [ -n "$old" ] || return 1
+	case "$new" in
+		*[!0-9]*) return 1 ;;
+	esac
+	case "$old" in
+		*[!0-9]*) return 0 ;;
+	esac
+	[ "$new" -gt "$old" ] 2>/dev/null
+}
+
+_fetch_manifest() {
+	local base="$1" manifest_path="$2" url
+	url=$(_abs_url "$base" "$manifest_path")
+	gogogo_curl "$url" --connect-timeout "$CURL_TIMEOUT" --max-time "$((CURL_TIMEOUT * 3))" \
+		-fsSL 2>/dev/null
+}
+
+_manifest_valid() {
+	local m="$1"
+	echo "$m" | jq -e '.version and .url and .sha256' >/dev/null 2>&1
+}
+
+_manifest_version() {
+	echo "$1" | jq -r '.version // empty' 2>/dev/null
+}
+
+# 记录候选：source_tag + manifest（写入临时文件，避免多行 JSON 破坏解析）
+CANDIDATES="/tmp/gogogo_update_candidates.$$"
+_candidate_add() {
+	local src="$1" manifest="$2" ver compact
+
+	_manifest_valid "$manifest" || return 1
+	compact=$(echo "$manifest" | jq -c . 2>/dev/null) || return 1
+	ver=$(_manifest_version "$compact")
+	[ -n "$ver" ] || return 1
+	printf '%s\n' "$src" >>"$CANDIDATES"
+	printf '%s\n' "$compact" >>"$CANDIDATES"
+	_log "manifest ok ($src) version=$ver"
+	return 0
+}
+
+# 1) base_url  2) GitHub 原始 raw  3) gh-proxy 加速 blob
+_collect_manifest_candidates() {
+	local base repo raw_prefix mirror_prefix m raw_ok=0 blob_ok=0
+
+	rm -f "$CANDIDATES"
+
+	base=$(gogogo_get_base_url)
+	if [ -n "$base" ]; then
+		m=$(_fetch_manifest "$base" "$UPDATE_MANIFEST") && \
+			_candidate_add "base:${base}" "$m" || \
+			_log "manifest skip (base_url)"
+	fi
+
+	repo=$(_github_repo)
+	raw_prefix=$(_github_raw_prefix)
+	if [ -n "$raw_prefix" ]; then
+		m=$(_fetch_manifest "$raw_prefix" "$GITHUB_MANIFEST_PATH") && \
+			_candidate_add "github:${repo}" "$m" && raw_ok=1 || \
+			_log "manifest skip (github raw)"
+	fi
+
+	mirror_prefix=$(_github_mirror_prefix)
+	if [ -n "$mirror_prefix" ]; then
+		m=$(_fetch_manifest "$mirror_prefix" "blob/${GITHUB_MANIFEST_PATH}") && \
+			_candidate_add "mirror:${mirror_prefix}" "$m" && blob_ok=1 || \
+			_log "manifest skip (github mirror blob)"
+		# raw/blob 皆成功则不再扫 Release（避免大量 404）；否则用加速 Release 补最新
+		if [ "$raw_ok" != 1 ] || [ "$blob_ok" != 1 ]; then
+			_probe_release_manifests "$mirror_prefix" "mirror"
+		fi
+	fi
+
+	# 原始 GitHub Release 仅作补源（国内常慢）
+	if [ "$raw_ok" != 1 ]; then
+		release_prefix=$(_github_release_prefix)
+		[ -n "$release_prefix" ] && _probe_release_manifests "$release_prefix" "github"
+	fi
+
+	[ -f "$CANDIDATES" ] || return 1
+	return 0
+}
+
+_pick_newest_manifest() {
+	local best_src="" best_m="" best_ver="" best_rank=0 src m ver rank
+
+	[ -f "$CANDIDATES" ] || return 1
+
+	while read -r src; do
+		read -r m || break
+		[ -n "$src" ] && [ -n "$m" ] || continue
+		_manifest_valid "$m" || continue
+		ver=$(_manifest_version "$m")
+		[ -n "$ver" ] || continue
+		rank=$(_source_rank "$src")
+		if [ -z "$best_ver" ] || _version_gt "$ver" "$best_ver"; then
+			best_ver="$ver"
+			best_src="$src"
+			best_m="$m"
+			best_rank="$rank"
+		elif [ "$ver" = "$best_ver" ] && [ "$rank" -gt "$best_rank" ]; then
+			best_src="$src"
+			best_m="$m"
+			best_rank="$rank"
+		fi
+	done <"$CANDIDATES"
+
+	rm -f "$CANDIDATES"
+	[ -n "$best_m" ] && [ -n "$best_src" ] || return 1
+
+	_log "manifest picked ($best_src) version=$best_ver"
+	printf '%s\n%s\n' "$best_m" "$best_src"
+	return 0
+}
+
+_ipk_base_for_source() {
+	local ver="$1" src="$2" repo tag
+
+	case "$src" in
+		base:*)
+			echo "${src#base:}"
+			;;
+		github:*)
+			repo=${src#github:}
+			tag=$(_release_tag "$ver")
+			case "$repo" in
+				http://*|https://*) echo "${repo%/}/releases/download/${tag}" ;;
+				*) echo "https://github.com/${repo}/releases/download/${tag}" ;;
+			esac
+			;;
+		mirror:*)
+			tag=$(_release_tag "$ver")
+			echo "${src#mirror:}/releases/download/${tag}"
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+_check_update() {
+	local lines manifest src_hint new url sha ipk_base cur ipk_url
+
+	[ "${CPE_AUTO_UPDATE:-0}" = "1" ] || {
+		_log "auto update disabled"
+		return 2
+	}
+
+	command -v jq >/dev/null 2>&1 || {
+		_log "jq required"
+		return 2
+	}
+
+	_collect_manifest_candidates || {
+		_log "manifest fetch failed (all sources)"
+		return 2
+	}
+
+	lines=$(_pick_newest_manifest) || {
+		_log "no valid manifest from any source"
+		return 2
+	}
+	src_hint=$(echo "$lines" | tail -n 1)
+	manifest=$(echo "$lines" | sed '$d')
+
+	new=$(echo "$manifest" | jq -r '.version // empty')
+	url=$(echo "$manifest" | jq -r '.url // empty')
+	sha=$(echo "$manifest" | jq -r '.sha256 // empty')
+
+	[ -n "$new" ] && [ -n "$url" ] && [ -n "$sha" ] || {
+		_log "invalid manifest"
+		return 2
+	}
+
+	cur=$(_installed_version)
+	[ -n "$cur" ] || cur="0"
+
+	if ! _version_gt "$new" "$cur"; then
+		return 0
+	fi
+
+	ipk_base=$(_ipk_base_for_source "$new" "$src_hint") || {
+		_log "unknown manifest source"
+		return 2
+	}
+
+	ipk_url=$(_abs_url "$ipk_base" "$url")
+	_log "upgrade $cur -> $new from $ipk_base"
+
+	rm -f "$UPDATE_IPK"
+	gogogo_curl "$ipk_url" --connect-timeout "$CURL_TIMEOUT" --max-time 300 -fSL -o "$UPDATE_IPK" || {
+		_log "ipk download failed"
+		rm -f "$UPDATE_IPK"
+		return 2
+	}
+
+	if ! echo "$sha  $UPDATE_IPK" | sha256sum -c - >/dev/null 2>&1; then
+		_log "sha256 mismatch"
+		rm -f "$UPDATE_IPK"
+		return 2
+	fi
+
+	[ -x /usr/sbin/gogogo-kill ] && /usr/sbin/gogogo-kill
+
+	if ! opkg install --force-reinstall "$UPDATE_IPK" >/dev/null 2>&1; then
+		_log "opkg install failed"
+		rm -f "$UPDATE_IPK"
+		return 2
+	fi
+
+	rm -f "$UPDATE_IPK"
+
+	if [ -x "/etc/init.d/${CPE_SERVICE}" ]; then
+		"/etc/init.d/${CPE_SERVICE}" enable 2>/dev/null
+		"/etc/init.d/${CPE_SERVICE}" start 2>/dev/null
+	fi
+
+	_log "upgraded to $new"
+	return 1
+}
+
+case "${1:-check}" in
+	check)
+		(
+			flock -n 9 || {
+				_log "update in progress"
+				exit 2
+			}
+			_check_update
+		) 9>"$UPDATE_LOCK"
+		;;
+	*)
+		echo "Usage: $0 check" >&2
+		exit 2
+		;;
+esac

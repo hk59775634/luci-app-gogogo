@@ -1,0 +1,126 @@
+#!/bin/sh
+# LuCI 状态 JSON：cped / cpe 主循环 / WG 握手 / chnroutes（勿仅以 ip link 判断 RUNNING）
+
+[ -f /usr/share/gogogo/defaults.sh ] && . /usr/share/gogogo/defaults.sh
+[ -f /usr/share/gogogo/procmgr.sh ] && . /usr/share/gogogo/procmgr.sh
+
+CPE_UCI="${CPE_UCI:-gogogo}"
+CHNROUTE_FILE="${CHNROUTE_FILE:-/etc/gogogo_chnroutes}"
+WG_HS_MAX_AGE="${WG_HANDSHAKE_MAX_AGE:-180}"
+
+_json_bool() {
+	[ "$1" = 1 ] && echo "true" || echo "false"
+}
+
+_uci_ok() {
+	uci -q get "${CPE_UCI}.@default[0].vpname" >/dev/null 2>&1
+}
+
+_vpname() {
+	local v
+	v=$(uci -q get "${CPE_UCI}.@default[0].vpname" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+	[ -n "$v" ] && echo "$v" || echo "${VPNAME:-GOGOGO}"
+}
+
+_enabled() {
+	case "$(uci -q get "${CPE_UCI}.@default[0].enable" 2>/dev/null)" in
+		1) echo 1 ;;
+		*) echo 0 ;;
+	esac
+}
+
+_chnroutes_ok() {
+	local cnt
+	[ -f "$CHNROUTE_FILE" ] || return 1
+	cnt=$(grep -cE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' "$CHNROUTE_FILE" 2>/dev/null || echo 0)
+	[ "$cnt" -ge 100 ]
+}
+
+_zt_node_id() {
+	[ -f /usr/share/gogogo/zt-cli.sh ] && . /usr/share/gogogo/zt-cli.sh
+	zt_node_id 2>/dev/null
+}
+
+_device_sn() {
+	local v
+	command -v fw_printenv >/dev/null 2>&1 || return 0
+	v=$(fw_printenv -n sn 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+	[ -n "$v" ] && echo "$v"
+}
+
+_wg_handshake_ok() {
+	local vp pk handshakes now age
+	vp=$(_vpname)
+	pk=$(uci -q get "network.@wireguard_${vp}[-1].public_key" 2>/dev/null)
+	[ -n "$pk" ] || return 1
+	ip link show "$vp" >/dev/null 2>&1 || return 1
+	handshakes=$(wg show "$vp" latest-handshakes 2>/dev/null | awk -v pk="$pk" '$1==pk {print $2}')
+	[ -n "$handshakes" ] || return 1
+	[ "$handshakes" != "0" ] || return 1
+	now=$(date +%s)
+	age=$((now - handshakes))
+	[ "$age" -le "$WG_HS_MAX_AGE" ]
+}
+
+_main() {
+	local enabled uci_ok cped cpe_main wg_link wg_hs chn_ok vp summary zt_id dev_sn
+
+	enabled=$(_enabled)
+	uci_ok=0
+	_uci_ok && uci_ok=1
+
+	cped=0
+	_gogogo_cped_alive && cped=1
+
+	cpe_main=0
+	_gogogo_main_alive && cpe_main=1
+
+	vp=$(_vpname)
+	wg_link=0
+	ip link show "$vp" >/dev/null 2>&1 && wg_link=1
+
+	wg_hs=0
+	_wg_handshake_ok && wg_hs=1
+
+	chn_ok=0
+	_chnroutes_ok && chn_ok=1
+
+	zt_id=$(_zt_node_id)
+	zt_id=${zt_id:-}
+
+	dev_sn=$(_device_sn)
+	dev_sn=${dev_sn:-}
+
+	summary="disabled"
+	if [ "$enabled" = 1 ]; then
+		if [ "$uci_ok" != 1 ]; then
+			summary="uci_broken"
+		elif [ "$cped" != 1 ]; then
+			summary="cped_down"
+		elif [ "$cpe_main" != 1 ]; then
+			summary="cpe_main_down"
+		elif [ "$wg_hs" = 1 ]; then
+			summary="vpn_ok"
+		elif [ "$wg_link" = 1 ]; then
+			summary="wg_no_handshake"
+		else
+			summary="wg_down"
+		fi
+	fi
+
+	printf '%s\n' "{\
+\"enabled\":$(_json_bool "$enabled"),\
+\"uci_ok\":$(_json_bool "$uci_ok"),\
+\"cped\":$(_json_bool "$cped"),\
+\"cpe_main\":$(_json_bool "$cpe_main"),\
+\"wg_link\":$(_json_bool "$wg_link"),\
+\"wg_handshake\":$(_json_bool "$wg_hs"),\
+\"chnroutes\":$(_json_bool "$chn_ok"),\
+\"summary\":\"$summary\",\
+\"vpname\":\"$vp\",\
+\"zt_node_id\":\"$zt_id\",\
+\"device_sn\":\"$dev_sn\"\
+}"
+}
+
+_main

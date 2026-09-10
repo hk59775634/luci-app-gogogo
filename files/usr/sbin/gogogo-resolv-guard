@@ -1,0 +1,21 @@
+#!/bin/sh
+# /etc/resolv.conf 守护：127.0.0.1 → WAN DHCP DNS 或 180.76.76.76
+
+[ -f /usr/share/gogogo/defaults.sh ] && . /usr/share/gogogo/defaults.sh
+[ -f /usr/share/gogogo/resolv-guard.sh ] && . /usr/share/gogogo/resolv-guard.sh
+
+RESOLV_LOCK="${CPE_RESOLV_GUARD_LOCK:-/tmp/gogogo_resolv_guard.lock}"
+
+case "${1:-check}" in
+	check)
+		(
+			flock -n 9 || exit 0
+			cpe_resolv_guard
+		) 9>"$RESOLV_LOCK"
+		;;
+	status) cpe_resolv_guard_status ;;
+	*)
+		echo "Usage: $0 check|status" >&2
+		exit 2
+		;;
+esac

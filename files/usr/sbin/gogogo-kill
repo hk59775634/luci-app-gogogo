@@ -1,0 +1,10 @@
+#!/bin/sh
+# 结束 gogogo/gogogod 主进程（不拆除 VPN 配置）
+
+[ -f /usr/share/gogogo/defaults.sh ] && . /usr/share/gogogo/defaults.sh
+[ -f /usr/share/gogogo/procmgr.sh ] && . /usr/share/gogogo/procmgr.sh
+
+_gogogo_main_stop_all
+_gogogo_cped_stop_all
+rm -f /tmp/gogogo.spawn.lock 2>/dev/null
+[ -x /etc/init.d/quagga ] && /etc/init.d/quagga stop >/dev/null 2>&1

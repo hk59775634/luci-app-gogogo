@@ -1,0 +1,196 @@
+#!/bin/sh
+# 选择国内上游 DNS：优先 WAN(DHCP/静态)，用 www.baidu.com 解析 + chnroutes 归属校验
+
+[ -f /usr/share/gogogo/defaults.sh ] && . /usr/share/gogogo/defaults.sh
+[ -f /usr/share/gogogo/doh-resolve.sh ] && . /usr/share/gogogo/doh-resolve.sh
+[ -f /usr/share/gogogo/wan-dns.sh ] && . /usr/share/gogogo/wan-dns.sh
+[ -f /usr/share/gogogo/chnroute-ip.sh ] && . /usr/share/gogogo/chnroute-ip.sh
+
+. /lib/functions/network.sh
+
+DNS_PROBE_DOMAIN="${DNS_PROBE_DOMAIN:-www.baidu.com}"
+DNS_LOCAL_FALLBACK="${DNS_LOCAL_FALLBACK:-180.76.76.76}"
+DNS_PROBE_CACHE="/tmp/gogogo_dns_local_selected"
+DNS_PROBE_STAMP="/tmp/gogogo_dns_probe.stamp"
+DNS_RESOLVE_CACHE="/tmp/gogogo_host_resolve.cache"
+CHNROUTE_FILE="${CHNROUTE_FILE:-/etc/gogogo_chnroutes}"
+
+_log() { logger -t gogogo-dns-probe "$*"; }
+
+# 解析 A 记录（@dns 为空则用系统解析）
+_resolve_a() {
+	local dns="$1" name="$2" ip=""
+	[ -n "$name" ] || return 1
+	if [ -n "$dns" ]; then
+		if command -v dig >/dev/null 2>&1; then
+			ip=$(dig +short +time=3 +tries=1 @"$dns" "$name" A 2>/dev/null | \
+				grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+		elif command -v host >/dev/null 2>&1; then
+			ip=$(host -t A -W 3 "$name" "$dns" 2>/dev/null | awk '/has address/ { print $4; exit }')
+		else
+			ip=$(nslookup "$name" "$dns" 2>/dev/null | \
+				awk '/^Address [0-9]+: / {
+					sub(/^Address [0-9]+: /, "");
+					if ($0 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) print $0
+				}' | tail -1)
+		fi
+	else
+		if command -v dig >/dev/null 2>&1; then
+			ip=$(dig +short +time=3 +tries=1 "$name" A 2>/dev/null | \
+				grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+		else
+			ip=$(nslookup "$name" 2>/dev/null | \
+				awk '/^Address [0-9]+: / {
+					sub(/^Address [0-9]+: /, "");
+					if ($0 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) print $0
+				}' | tail -1)
+		fi
+	fi
+	[ -n "$ip" ] && echo "$ip"
+}
+
+_chnroutes_ready() {
+	[ -f "$CHNROUTE_FILE" ] && grep -qE '^[0-9]' "$CHNROUTE_FILE" 2>/dev/null
+}
+
+# 输出: china | foreign
+_ip_cn_check() {
+	local ip="$1"
+	chnroute_ip_in_cn "$ip" && echo china || echo foreign
+}
+
+_wan_dns_servers() {
+	wan_dns_usable
+}
+
+_probe_stamp() {
+	local wan_dns
+	wan_dns=$(_wan_dns_servers | tr '\n' ' ')
+	echo "$wan_dns" | md5sum | awk '{print $1}'
+}
+
+# 输出选中的国内上游 DNS（stdout）
+pick_dns_local() {
+	local newstamp dns ip chosen reason geo
+	chosen="$DNS_LOCAL_FALLBACK"
+	reason="fallback"
+
+	newstamp=$(_probe_stamp)
+	if [ -f "$DNS_PROBE_STAMP" ] && [ "$(cat "$DNS_PROBE_STAMP" 2>/dev/null)" = "$newstamp" ] && \
+		[ -f "$DNS_PROBE_CACHE" ]; then
+		cat "$DNS_PROBE_CACHE"
+		return 0
+	fi
+
+	if ! _chnroutes_ready; then
+		_log "chnroutes missing, use fallback $chosen"
+		echo "$chosen" > "$DNS_PROBE_CACHE"
+		echo "$newstamp" > "$DNS_PROBE_STAMP"
+		echo "$chosen"
+		return 0
+	fi
+
+	for dns in $(_wan_dns_servers); do
+		[ -n "$dns" ] || continue
+		case "$dns" in
+			127.* | 0.0.0.0 | 255.*) continue ;;
+		esac
+		ip=$(_resolve_a "$dns" "$DNS_PROBE_DOMAIN")
+		if [ -z "$ip" ]; then
+			_log "skip $dns: cannot resolve $DNS_PROBE_DOMAIN"
+			continue
+		fi
+		geo=$(_ip_cn_check "$ip")
+		case "$geo" in
+			china)
+				chosen="$dns"
+				reason="wan+baidu+cn($ip)"
+				break
+				;;
+			*)
+				_log "skip $dns: $DNS_PROBE_DOMAIN -> $ip not in chnroutes"
+				;;
+		esac
+	done
+
+	echo "$chosen" > "$DNS_PROBE_CACHE"
+	echo "$newstamp" > "$DNS_PROBE_STAMP"
+	_log "selected $chosen ($reason)"
+	echo "$chosen"
+}
+
+_resolve_cache_get() {
+	local host="$1" line ip
+	[ -f "$DNS_RESOLVE_CACHE" ] || return 1
+	line=$(grep "^${host}=" "$DNS_RESOLVE_CACHE" 2>/dev/null | tail -1)
+	ip=${line#*=}
+	[ -n "$ip" ] && echo "$ip"
+}
+
+_resolve_cache_put() {
+	local host="$1" ip="$2"
+	[ -n "$host" ] && [ -n "$ip" ] || return 0
+	grep -v "^${host}=" "$DNS_RESOLVE_CACHE" 2>/dev/null > "${DNS_RESOLVE_CACHE}.$$"
+	echo "${host}=${ip}" >> "${DNS_RESOLVE_CACHE}.$$"
+	mv "${DNS_RESOLVE_CACHE}.$$" "$DNS_RESOLVE_CACHE"
+}
+
+# 解析主机 A 记录：国内 DoH(阿里/腾讯纯IP) → 指定 DNS → 系统 → 后备 DNS
+resolve_host() {
+	local host="$1" dns="${2:-}" ip
+
+	[ -n "$host" ] || return 1
+	case "$host" in
+		[0-9]*.[0-9]*.[0-9]*.[0-9]*) echo "$host"; return 0 ;;
+	esac
+
+	ip=$(_resolve_cache_get "$host")
+	[ -n "$ip" ] && echo "$ip" && return 0
+
+	if command -v doh_resolve_host >/dev/null 2>&1; then
+		ip=$(doh_resolve_host "$host")
+		if [ -n "$ip" ]; then
+			_log "DoH resolved $host -> $ip"
+			_resolve_cache_put "$host" "$ip"
+			echo "$ip"
+			return 0
+		fi
+	fi
+
+	[ -z "$dns" ] && [ -f "$DNS_PROBE_CACHE" ] && dns=$(cat "$DNS_PROBE_CACHE")
+	[ -z "$dns" ] && dns="$DNS_LOCAL_FALLBACK"
+	ip=$(_resolve_a "$dns" "$host")
+	[ -z "$ip" ] && [ "$dns" != "$DNS_LOCAL_FALLBACK" ] && \
+		ip=$(_resolve_a "$DNS_LOCAL_FALLBACK" "$host")
+	[ -z "$ip" ] && ip=$(_resolve_a "" "$host")
+
+	if [ -n "$ip" ]; then
+		_resolve_cache_put "$host" "$ip"
+		echo "$ip"
+		return 0
+	fi
+	return 1
+}
+
+case "${1:-pick}" in
+	pick) pick_dns_local ;;
+	resolve)
+		if [ -n "$2" ] && [ -n "$3" ]; then
+			_resolve_a "$3" "$2"
+		elif [ -n "$2" ]; then
+			resolve_host "$2"
+		fi
+		;;
+	doh)
+		if [ -n "$2" ]; then
+			doh_resolve_host "$2"
+		fi
+		;;
+	export)
+		echo "dns_local_1=$(pick_dns_local)"
+		;;
+	*)
+		echo "Usage: $0 pick | export | resolve <host> [dns] | doh <host>" >&2
+		exit 2
+		;;
+esac

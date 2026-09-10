@@ -1,0 +1,28 @@
+#!/bin/sh
+# LuCI 保存后后台任务：避免阻塞 uhttpd（check_user / refresh_dns 较慢）
+
+[ -f /usr/share/gogogo/defaults.sh ] && . /usr/share/gogogo/defaults.sh
+
+CPE_UCI="${CPE_UCI:-gogogo}"
+LOCK="${CPE_LUCI_AFTER_SAVE_LOCK:-/tmp/gogogo_luci_after_save.lock}"
+TIMESYNC_STAMP="${CPE_TIMESYNC_STAMP:-/tmp/gogogo.timesync.ok}"
+
+_run() {
+	local u p
+
+	[ -f "$TIMESYNC_STAMP" ] || /usr/sbin/gogogo-timesync 2>/dev/null
+
+	u=$(uci -q get "${CPE_UCI}.@default[0].username" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+	p=$(uci -q get "${CPE_UCI}.@default[0].password" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+	if [ -n "$u" ] && [ -n "$p" ]; then
+		/usr/sbin/gogogo check_user 2>/dev/null
+	fi
+
+	/usr/sbin/gogogo refresh_dns 2>/dev/null
+	/usr/sbin/gogogo refresh_routes 2>/dev/null
+}
+
+(
+	flock -n 9 || exit 0
+	_run
+) 9>"$LOCK"

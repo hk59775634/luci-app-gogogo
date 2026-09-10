@@ -1,0 +1,112 @@
+#!/bin/sh
+# 从 base_url 拉取国内路由表 URL 并更新 /etc/gogogo_chnroutes（cped 定时刷新）
+
+[ -f /usr/share/gogogo/defaults.sh ] && . /usr/share/gogogo/defaults.sh
+[ -f /usr/share/gogogo/curl-resolve.sh ] && . /usr/share/gogogo/curl-resolve.sh
+
+CHNROUTES_STAMP="${CHNROUTES_FETCH_STAMP:-/tmp/gogogo_chnroutes_fetch.stamp}"
+CHNROUTES_FAIL_STAMP="/tmp/gogogo_chnroutes_fetch.fail"
+CHNROUTES_RETRY_SEC="${CPE_CHNROUTES_RETRY_SEC:-3600}"
+CHNROUTE_FILE="${CHNROUTE_FILE:-/etc/gogogo_chnroutes}"
+CHNROUTES_API_PATH="${CHNROUTES_API_PATH:-/api/v1/cpe/chnroutes}"
+CHNROUTES_LOCK="${CPE_CHNROUTES_LOCK:-/tmp/gogogo_chnroutes_update.lock}"
+CURL_TIMEOUT="${CURL_TIMEOUT:-10}"
+
+_log() { echo "gogogo-chnroutes-update: $*" >&2; }
+
+_migrate_legacy() {
+	[ -f "$CHNROUTE_FILE" ] && return 0
+	[ -f /etc/chnroute ] || return 0
+	cp /etc/chnroute "$CHNROUTE_FILE" 2>/dev/null && _log "migrated /etc/chnroute -> $CHNROUTE_FILE"
+}
+
+_validate_routes() {
+	local f="$1" cnt
+	cnt=$(grep -cE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' "$f" 2>/dev/null || echo 0)
+	[ "$cnt" -ge 100 ]
+}
+
+_fail_backoff() {
+	local now last
+	[ ! -f "$CHNROUTES_FAIL_STAMP" ] && return 1
+	now=$(date +%s 2>/dev/null)
+	last=$(cat "$CHNROUTES_FAIL_STAMP" 2>/dev/null)
+	[ -n "$now" ] && [ -n "$last" ] && [ $((now - last)) -lt "$CHNROUTES_RETRY_SEC" ]
+}
+
+_fetch_once() {
+	local base_url api_url resp url tmp cnt
+	[ -f "$CHNROUTES_STAMP" ] && return 0
+	_fail_backoff && return 1
+
+	_migrate_legacy
+
+	base_url=$(gogogo_get_base_url)
+	[ -n "$base_url" ] || { _log "base_url empty, skip"; return 1; }
+
+	api_url="${base_url%/}${CHNROUTES_API_PATH}"
+	resp=$(gogogo_curl "$api_url" --connect-timeout "$CURL_TIMEOUT" --max-time "$CURL_TIMEOUT" -fsSL \
+		2>/dev/null) || {
+		_log "config API failed: $api_url"
+		date +%s > "$CHNROUTES_FAIL_STAMP" 2>/dev/null
+		[ -f "$CHNROUTE_FILE" ] && return 0
+		return 1
+	}
+
+	if ! echo "$resp" | jq -e . >/dev/null 2>&1; then
+		_log "invalid JSON from $api_url"
+		date +%s > "$CHNROUTES_FAIL_STAMP" 2>/dev/null
+		return 1
+	fi
+
+	url=$(echo "$resp" | jq -r '.chnroutes_url // .url // empty' 2>/dev/null)
+	[ -n "$url" ] || url=$(echo "$resp" | jq -r '.data.chnroutes_url // empty' 2>/dev/null)
+	[ -n "$url" ] || {
+		_log "chnroutes_url missing in API response"
+		date +%s > "$CHNROUTES_FAIL_STAMP" 2>/dev/null
+		return 1
+	}
+
+	tmp="/tmp/gogogo_chnroutes.$$.dl"
+	if ! gogogo_curl "$url" --connect-timeout "$CURL_TIMEOUT" --max-time 60 -fsSL -o "$tmp" 2>/dev/null; then
+		_log "download failed: $url"
+		rm -f "$tmp"
+		date +%s > "$CHNROUTES_FAIL_STAMP" 2>/dev/null
+		[ -f "$CHNROUTE_FILE" ] && return 0
+		return 1
+	fi
+
+	if ! _validate_routes "$tmp"; then
+		cnt=$(grep -cE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/' "$tmp" 2>/dev/null || echo 0)
+		_log "invalid routes file (lines=$cnt): $url"
+		rm -f "$tmp"
+		date +%s > "$CHNROUTES_FAIL_STAMP" 2>/dev/null
+		return 1
+	fi
+
+	mv "$tmp" "$CHNROUTE_FILE"
+	chmod 0644 "$CHNROUTE_FILE"
+	touch "$CHNROUTES_STAMP"
+	rm -f "$CHNROUTES_FAIL_STAMP" 2>/dev/null
+	_log "updated $CHNROUTE_FILE from $url ($(grep -cE '^[0-9]' "$CHNROUTE_FILE") routes)"
+	return 0
+}
+
+_run() {
+	case "${1:-fetch}" in
+		fetch) _fetch_once ;;
+		force)
+			rm -f "$CHNROUTES_STAMP" "$CHNROUTES_FAIL_STAMP"
+			_fetch_once
+			;;
+		*)
+			echo "Usage: $0 [fetch|force]" >&2
+			exit 1
+			;;
+	esac
+}
+
+(
+	flock -n 9 || exit 0
+	_run "$1"
+) 9>"$CHNROUTES_LOCK"

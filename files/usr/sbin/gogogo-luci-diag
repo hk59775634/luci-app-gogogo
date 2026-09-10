@@ -1,0 +1,812 @@
+#!/bin/sh
+# LuCI 连接诊断：分步检测、按 VPN 逻辑筛选重点故障、flock 单实例
+
+[ -f /usr/share/gogogo/defaults.sh ] && . /usr/share/gogogo/defaults.sh
+[ -f /usr/share/gogogo/procmgr.sh ] && . /usr/share/gogogo/procmgr.sh
+[ -f /usr/share/gogogo/wan-dns.sh ] && . /usr/share/gogogo/wan-dns.sh
+[ -f /lib/functions/network.sh ] && . /lib/functions/network.sh
+
+CPE_UCI="${CPE_UCI:-gogogo}"
+CHNROUTE_FILE="${CHNROUTE_FILE:-/etc/gogogo_chnroutes}"
+DNSMASQ_DROPIN="${DNSMASQ_DROPIN:-/tmp/dnsmasq.d/gogogo-vpn.conf}"
+WG_HS_MAX_AGE="${WG_HANDSHAKE_MAX_AGE:-180}"
+DIAG_LOCK="${CPE_LUCI_DIAG_LOCK:-/var/run/gogogo-luci-diag.lock}"
+DIAG_STATE="${CPE_LUCI_DIAG_STATE:-/tmp/gogogo-luci-diag.json}"
+DIAG_PID="${CPE_LUCI_DIAG_PID:-/var/run/gogogo-luci-diag.pid}"
+
+STEP_FILE=""
+STEPS_JSON=""
+FAULTS_JSON=""
+VPN_HEALTHY="false"
+ZT_ID=""
+DEV_SN=""
+CURRENT_TITLE=""
+CURRENT_DETAIL=""
+ACCOUNT_AUTH_ST=""  # ok | api_error | account_error | expired | hint
+DIAG_STEP_IDX=0
+DIAG_STEP_TOTAL=27
+# 网络项：5 次重试 + 较短单次超时，兼顾防误判与总耗时
+DIAG_NET_RETRY_MAX=5
+DIAG_NET_RETRY_WAIT=1
+DIAG_PING_TIMEOUT=2
+DIAG_PING_COUNT=1
+DIAG_DNS_TIME=2
+DIAG_DNS_TRIES=1
+DIAG_VPN_TRANSFER_WAIT=1
+DIAG_API_CURL_TIMEOUT=6
+
+_json_esc() {
+	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r//g'
+}
+
+_fault_add() {
+	local msg="$1" esc
+	esc=$(_json_esc "$msg")
+	[ -n "$FAULTS_JSON" ] && FAULTS_JSON="${FAULTS_JSON},"
+	FAULTS_JSON="${FAULTS_JSON}\"${esc}\""
+}
+
+_step_line() {
+	awk -F'|' -v id="$1" '$1 == id { line = $0 } END { print line }' "$STEP_FILE" 2>/dev/null
+}
+
+_step_field() {
+	echo "$1" | awk -F'|' '{ print $'"$2"' }'
+}
+
+_rebuild_steps_json() {
+	STEPS_JSON=""
+	[ -f "$STEP_FILE" ] || return 0
+	local tmp steps
+	tmp=$(mktemp)
+	awk -F'|' '
+		{ lines[$1]=$0; if (!ord[$1]++) order[++n]=$1 }
+		END { for (i=1;i<=n;i++) print lines[order[i]] }
+	' "$STEP_FILE" >"$tmp"
+	steps=""
+	while IFS='|' read -r id title status detail _fault; do
+		[ -n "$id" ] || continue
+		esc_t=$(_json_esc "$title")
+		esc_d=$(_json_esc "$detail")
+		[ -n "$steps" ] && steps="${steps},"
+		steps="${steps}{\"id\":\"${id}\",\"title\":\"${esc_t}\",\"status\":\"${status}\",\"detail\":\"${esc_d}\"}"
+	done <"$tmp"
+	rm -f "$tmp"
+	STEPS_JSON="$steps"
+}
+
+# 按 VPN 服务逻辑只保留根因级故障说明
+_filter_faults() {
+	local line st fault
+
+	FAULTS_JSON=""
+
+	# 1 存储 / 基础配置
+	for id in overlay rootfs uci_cpe; do
+		line=$(_step_line "$id")
+		st=$(_step_field "$line" 3)
+		fault=$(_step_field "$line" 5)
+		[ "$st" = "fail" ] && [ -n "$fault" ] && { _fault_add "$fault"; return 0; }
+	done
+
+	# 2 WAN（任一失败则不再报 API/账号/VPN 下游）
+	for id in uci_net wan_link wan_ip wan_gw wan_ping_cn wan_dns_srv wan_dns_resolve; do
+		line=$(_step_line "$id")
+		st=$(_step_field "$line" 3)
+		fault=$(_step_field "$line" 5)
+		if [ "$st" = "fail" ] && [ -n "$fault" ]; then
+			_fault_add "$fault"
+			return 0
+		fi
+	done
+
+	# 3 时间 / 云端配置
+	for id in time cloud_url; do
+		line=$(_step_line "$id")
+		st=$(_step_field "$line" 3)
+		fault=$(_step_field "$line" 5)
+		[ "$st" = "fail" ] && [ -n "$fault" ] && { _fault_add "$fault"; return 0; }
+	done
+
+	# 4 账号鉴权（失败则不再报 VPN 接口/隧道/DNS 下游）
+	line=$(_step_line account_auth)
+	st=$(_step_field "$line" 3)
+	fault=$(_step_field "$line" 5)
+	if [ "$st" = "fail" ] && [ -n "$fault" ]; then
+		_fault_add "$fault"
+		return 0
+	fi
+
+	line=$(_step_line vpn_enable)
+	st=$(_step_field "$line" 3)
+	if [ "$st" = "skip" ]; then
+		_fault_add "VPN 未启用（请在常规配置中开启开机启动）"
+		return 0
+	fi
+
+	# 5 守护进程 / 路由表
+	for id in cped cpe_main chnroutes_file chnroutes_fmt chnroutes_data; do
+		line=$(_step_line "$id")
+		st=$(_step_field "$line" 3)
+		fault=$(_step_field "$line" 5)
+		[ "$st" = "fail" ] && [ -n "$fault" ] && { _fault_add "$fault"; return 0; }
+	done
+
+	# 6 VPN 接口 / 握手 / 隧道
+	for id in wg_iface wg_hs vpn_traffic; do
+		line=$(_step_line "$id")
+		st=$(_step_field "$line" 3)
+		fault=$(_step_field "$line" 5)
+		[ "$st" = "fail" ] && [ -n "$fault" ] && { _fault_add "$fault"; return 0; }
+	done
+
+	# 7 VPN 通道 DNS（仅隧道正常后才列入重点故障）
+	for id in dnsmasq_vpn vpn_dns_upstream; do
+		line=$(_step_line "$id")
+		st=$(_step_field "$line" 3)
+		fault=$(_step_field "$line" 5)
+		[ "$st" = "fail" ] && [ -n "$fault" ] && { _fault_add "$fault"; return 0; }
+	done
+
+	return 0
+}
+
+_progress_pct() {
+	[ "$DIAG_STEP_TOTAL" -gt 0 ] || { echo 0; return; }
+	echo $((DIAG_STEP_IDX * 100 / DIAG_STEP_TOTAL))
+}
+
+_step_running() {
+	_step_running_try "$2" "${3:-检测中…}"
+}
+
+# $1=title $2=detail $3=try(optional)
+_step_running_try() {
+	CURRENT_TITLE="$1"
+	if [ -n "$3" ]; then
+		CURRENT_DETAIL="${2}（第 ${3}/${DIAG_NET_RETRY_MAX} 次）"
+	else
+		CURRENT_DETAIL="${2:-检测中…}"
+	fi
+	_write_state running
+}
+
+_step_end() {
+	echo "${1}|${2}|${3}|${4}|${5}" >>"$STEP_FILE"
+	DIAG_STEP_IDX=$((DIAG_STEP_IDX + 1))
+	CURRENT_TITLE=""
+	CURRENT_DETAIL=""
+	_write_state running
+}
+
+_write_state() {
+	local state="$1" esc_zt esc_sn esc_cur_t esc_cur_d cur_json pct
+	[ "$state" = "done" ] && _filter_faults
+	_rebuild_steps_json
+	esc_zt=$(_json_esc "$ZT_ID")
+	esc_sn=$(_json_esc "$DEV_SN")
+	pct=$(_progress_pct)
+	cur_json=""
+	if [ -n "$CURRENT_TITLE" ]; then
+		esc_cur_t=$(_json_esc "$CURRENT_TITLE")
+		esc_cur_d=$(_json_esc "$CURRENT_DETAIL")
+		cur_json=",\"current\":{\"title\":\"${esc_cur_t}\",\"detail\":\"${esc_cur_d}\"}"
+	fi
+	printf '%s' "{\"state\":\"${state}\",\"vpn_healthy\":${VPN_HEALTHY},\"progress\":${DIAG_STEP_IDX},\"progress_total\":${DIAG_STEP_TOTAL},\"progress_pct\":${pct},\"faults\":[${FAULTS_JSON}],\"steps\":[${STEPS_JSON}]${cur_json},\"zt_node_id\":\"${esc_zt}\",\"device_sn\":\"${esc_sn}\"}" >"${DIAG_STATE}.tmp"
+	mv -f "${DIAG_STATE}.tmp" "$DIAG_STATE"
+}
+
+_diag_pid_alive() {
+	local pid cmd
+	pid=$(cat "$DIAG_PID" 2>/dev/null)
+	[ -n "$pid" ] || return 1
+	kill -0 "$pid" 2>/dev/null || return 1
+	cmd=$(tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null)
+	case "$cmd" in *cpe-luci-diag*) return 0 ;; esac
+	return 1
+}
+
+_uci_ok() { uci -q get "${CPE_UCI}.@default[0].vpname" >/dev/null 2>&1; }
+
+_vpname() {
+	local v
+	v=$(uci -q get "${CPE_UCI}.@default[0].vpname" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+	[ -n "$v" ] && echo "$v" || echo "${VPNAME:-GOGOGO}"
+}
+
+_enabled() {
+	case "$(uci -q get "${CPE_UCI}.@default[0].enable" 2>/dev/null)" in 1) return 0 ;; esac
+	return 1
+}
+
+_brand_from_url() {
+	local url host part brand
+	url=$(echo "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+	[ -z "$url" ] && return 0
+	host=$(echo "$url" | sed -e 's|^[a-zA-Z]*://||' -e 's|/.*||' -e 's|:.*||')
+	[ -z "$host" ] && return 0
+	brand=$(echo "$host" | awk -F. '{
+		if (NF >= 3 && tolower($1) == "gogogo") { print $2; exit }
+		if (NF >= 2) { print $(NF-1); exit }
+	}')
+	[ -n "$brand" ] && echo "$brand" | tr 'a-z' 'A-Z'
+}
+
+_chnroutes_file_exists() { [ -f "$CHNROUTE_FILE" ]; }
+
+_chnroutes_valid_lines() {
+	grep -cE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' "$CHNROUTE_FILE" 2>/dev/null || echo 0
+}
+
+_chnroutes_fmt_ok() {
+	local cnt
+	_chnroutes_file_exists || return 1
+	cnt=$(_chnroutes_valid_lines)
+	[ "$cnt" -ge 1 ]
+}
+
+_chnroutes_loaded() {
+	local cnt
+	_chnroutes_fmt_ok || return 1
+	cnt=$(_chnroutes_valid_lines)
+	[ "$cnt" -ge 100 ]
+}
+
+_wg_handshake_ok() {
+	local vp pk handshakes now age
+	vp=$(_vpname)
+	pk=$(uci -q get "network.@wireguard_${vp}[-1].public_key" 2>/dev/null)
+	[ -n "$pk" ] || return 1
+	ip link show "$vp" >/dev/null 2>&1 || return 1
+	handshakes=$(wg show "$vp" latest-handshakes 2>/dev/null | awk -v pk="$pk" '$1==pk {print $2}')
+	[ -n "$handshakes" ] || return 1
+	[ "$handshakes" != "0" ] || return 1
+	now=$(date +%s)
+	age=$((now - handshakes))
+	[ "$age" -le "$WG_HS_MAX_AGE" ]
+}
+
+_wg_peer_transfer() {
+	wg show "$1" transfer 2>/dev/null | awk -v pk="$2" '$1 == pk { print $2, $3 }'
+}
+
+_vpn_server_comm_ok_once() {
+	local vp pk rx1 tx1 rx2 tx2 drx dtx ping_ok
+	vp=$(_vpname)
+	pk=$(uci -q get "network.@wireguard_${vp}[-1].public_key" 2>/dev/null)
+	[ -n "$pk" ] || return 1
+	ip link show "$vp" >/dev/null 2>&1 || return 1
+	_wg_handshake_ok || return 1
+	set -- $(_wg_peer_transfer "$vp" "$pk")
+	rx1=${1:-0}; tx1=${2:-0}
+	ping_ok=0
+	_vpn_ping_via_iface "$vp" && ping_ok=1
+	sleep "$DIAG_VPN_TRANSFER_WAIT"
+	set -- $(_wg_peer_transfer "$vp" "$pk")
+	rx2=${1:-0}; tx2=${2:-0}
+	drx=$((rx2 - rx1)); dtx=$((tx2 - tx1))
+	[ "$dtx" -gt 128 ] && [ "$drx" -lt 64 ] && return 1
+	[ "$ping_ok" = 1 ] && return 0
+	return 1
+}
+
+_vpn_server_comm_ok() {
+	local try=1
+	while [ "$try" -le "$DIAG_NET_RETRY_MAX" ]; do
+		_step_running_try "VPN 隧道通讯" "正在检测隧道收发…" "$try"
+		_vpn_server_comm_ok_once && return 0
+		[ "$try" -lt "$DIAG_NET_RETRY_MAX" ] && sleep "$DIAG_NET_RETRY_WAIT"
+		try=$((try + 1))
+	done
+	return 1
+}
+
+_vpn_remote_dns() {
+	local d
+	d=$(uci -q get "${CPE_UCI}.@default[0].dns_server" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+	[ -n "$d" ] && echo "$d" && return 0
+	[ -f "$DNSMASQ_DROPIN" ] || return 1
+	d=$(grep '^server=' "$DNSMASQ_DROPIN" 2>/dev/null | grep ',1' | head -1 | sed 's/^server=//;s/,1$//;s/,1,.*//')
+	[ -n "$d" ] && echo "$d" && return 0
+	d=$(grep '^server=' "$DNSMASQ_DROPIN" 2>/dev/null | grep -v ',0' | head -1 | sed 's/^server=//;s/,.*//')
+	[ -n "$d" ] && echo "$d"
+}
+
+_vpn_dns_upstream_ok_once() {
+	local dns
+	dns=$(_vpn_remote_dns)
+	[ -n "$dns" ] || return 1
+	_dns_resolve "$dns" www.google.com || _dns_resolve "$dns" www.baidu.com
+}
+
+_vpn_dns_upstream_ok() {
+	local try=1
+	_vpn_server_comm_ok_once || return 1
+	while [ "$try" -le "$DIAG_NET_RETRY_MAX" ]; do
+		_step_running_try "VPN 通道 DNS 解析" "正在检测 VPN DNS 上游…" "$try"
+		_vpn_dns_upstream_ok_once && return 0
+		[ "$try" -lt "$DIAG_NET_RETRY_MAX" ] && sleep "$DIAG_NET_RETRY_WAIT"
+		try=$((try + 1))
+	done
+	return 1
+}
+
+_zt_node_id() {
+	[ -f /usr/share/gogogo/zt-cli.sh ] && . /usr/share/gogogo/zt-cli.sh
+	zt_node_id 2>/dev/null
+}
+
+_device_sn() {
+	local v
+	command -v fw_printenv >/dev/null 2>&1 || return 0
+	v=$(fw_printenv -n sn 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+	[ -n "$v" ] && echo "$v"
+}
+
+_ping_host() {
+	ping -c "$DIAG_PING_COUNT" -W "$DIAG_PING_TIMEOUT" "$1" >/dev/null 2>&1
+}
+
+_vpn_ping_via_iface() {
+	local vp="$1"
+	ping -I "$vp" -c "$DIAG_PING_COUNT" -W "$DIAG_PING_TIMEOUT" 8.8.8.8 >/dev/null 2>&1 && return 0
+	ping -I "$vp" -c "$DIAG_PING_COUNT" -W "$DIAG_PING_TIMEOUT" 1.1.1.1 >/dev/null 2>&1
+}
+
+_retry_ping() {
+	local title="$1" host="$2" try=1
+	while [ "$try" -le "$DIAG_NET_RETRY_MAX" ]; do
+		_step_running_try "$title" "正在检测连通性…" "$try"
+		_ping_host "$host" && return 0
+		[ "$try" -lt "$DIAG_NET_RETRY_MAX" ] && sleep "$DIAG_NET_RETRY_WAIT"
+		try=$((try + 1))
+	done
+	return 1
+}
+
+_retry_wan_ip() {
+	local try=1 ip=""
+	while [ "$try" -le "$DIAG_NET_RETRY_MAX" ]; do
+		_step_running_try "WAN IP 地址" "正在获取 WAN IP…" "$try"
+		ip=""
+		network_get_ipaddr ip "$NET_IF" 2>/dev/null
+		[ -n "$ip" ] && return 0
+		[ "$try" -lt "$DIAG_NET_RETRY_MAX" ] && sleep "$DIAG_NET_RETRY_WAIT"
+		try=$((try + 1))
+	done
+	return 1
+}
+
+_retry_wan_gateway() {
+	local try=1 gw=""
+	while [ "$try" -le "$DIAG_NET_RETRY_MAX" ]; do
+		_step_running_try "默认网关" "正在获取默认网关…" "$try"
+		gw=$(wan_gateway 2>/dev/null)
+		[ -n "$gw" ] && return 0
+		[ "$try" -lt "$DIAG_NET_RETRY_MAX" ] && sleep "$DIAG_NET_RETRY_WAIT"
+		try=$((try + 1))
+	done
+	return 1
+}
+
+_retry_dns_resolve() {
+	local dns="$1" name="${2:-www.baidu.com}" try=1
+	while [ "$try" -le "$DIAG_NET_RETRY_MAX" ]; do
+		_step_running_try "WAN DNS 解析" "正在解析 ${name}…" "$try"
+		_dns_resolve "$dns" "$name" && return 0
+		[ "$try" -lt "$DIAG_NET_RETRY_MAX" ] && sleep "$DIAG_NET_RETRY_WAIT"
+		try=$((try + 1))
+	done
+	return 1
+}
+
+_dns_resolve() {
+	local dns="$1" name="${2:-www.baidu.com}"
+	if command -v dig >/dev/null 2>&1; then
+		dig +short +time="$DIAG_DNS_TIME" +tries="$DIAG_DNS_TRIES" \
+			${dns:+@"$dns"} "$name" A 2>/dev/null | grep -qE '^[0-9]+\.'
+		return $?
+	fi
+	if command -v timeout >/dev/null 2>&1; then
+		timeout $((DIAG_DNS_TIME + 1)) nslookup "$name" ${dns:+"$dns"} >/dev/null 2>&1
+		return $?
+	fi
+	nslookup "$name" ${dns:+"$dns"} >/dev/null 2>&1
+}
+
+_account_auth_check() {
+	local raw st msg detail fault try=1 retry_api=0
+	ACCOUNT_AUTH_ST=""
+	[ -x /usr/sbin/gogogo ] || {
+		_step_end account_auth "VPN 账号鉴权" fail "无法执行鉴权" "CPE 程序不可用"
+		return
+	}
+	while [ "$try" -le "$DIAG_NET_RETRY_MAX" ]; do
+		_step_running_try "VPN 账号鉴权" "正在连接服务器…" "$try"
+		raw=$(CPE_DIAG_CURL_TIMEOUT="$DIAG_API_CURL_TIMEOUT" \
+			/usr/sbin/gogogo account_diag 2>/dev/null)
+		st=""
+		msg=""
+		command -v jq >/dev/null 2>&1 && {
+			st=$(echo "$raw" | jq -r '.status // empty' 2>/dev/null)
+			msg=$(echo "$raw" | jq -r '.message // empty' 2>/dev/null)
+		}
+		[ -z "$st" ] && {
+			st=$(echo "$raw" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+			msg=$(echo "$raw" | sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+		}
+		[ -z "$msg" ] && msg="账号状态未知"
+		case "$st" in
+			api_error)
+				retry_api=1
+				[ "$try" -lt "$DIAG_NET_RETRY_MAX" ] || break
+				sleep "$DIAG_NET_RETRY_WAIT"
+				try=$((try + 1))
+				continue
+				;;
+			*) break ;;
+		esac
+	done
+	[ -z "$st" ] && st="account_error"
+	ACCOUNT_AUTH_ST="$st"
+	case "$st" in
+		ok)
+			detail="$msg"
+			fault=""
+			;;
+		expired)
+			detail="$msg"
+			fault="$msg"
+			;;
+		account_error|hint)
+			detail="$msg"
+			fault="$msg"
+			;;
+		api_error)
+			detail="API服务器通讯异常"
+			fault="API服务器通讯异常"
+			[ "$retry_api" = 1 ] && detail="${detail}（已重试 ${DIAG_NET_RETRY_MAX} 次）"
+			;;
+		*)
+			detail="账号信息有误，请核对后重新填写"
+			fault="账号信息有误，请核对后重新填写"
+			st=account_error
+			ACCOUNT_AUTH_ST=account_error
+			;;
+	esac
+	_step_end account_auth "VPN 账号鉴权" "$([ "$st" = ok ] && echo ok || echo fail)" "$detail" "$fault"
+}
+
+_vpn_stack_blocked() {
+	case "$ACCOUNT_AUTH_ST" in
+		account_error|expired|hint|api_error) return 0 ;;
+	esac
+	return 1
+}
+
+_skip_vpn_steps() {
+	echo "cped|VPN 看门狗（gogogod）|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
+	echo "cpe_main|VPN 主进程|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
+	echo "chnroutes_file|国内路由表文件|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
+	echo "chnroutes_fmt|国内路由表格式|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
+	echo "chnroutes_data|国内路由表数据|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
+	echo "wg_iface|WireGuard VPN 接口|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
+	echo "wg_hs|WireGuard 握手|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
+	echo "vpn_traffic|VPN 隧道通讯|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
+	echo "dnsmasq_vpn|VPN DNS 配置（dnsmasq）|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
+	echo "vpn_dns_upstream|VPN 通道 DNS 解析|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
+	_write_state running
+}
+
+_block_vpn_downstream_steps() {
+	local reason="${1:-账号鉴权未通过，跳过}"
+	echo "cped|VPN 看门狗（gogogod）|skip|${reason}|" >>"$STEP_FILE"
+	echo "cpe_main|VPN 主进程|skip|${reason}|" >>"$STEP_FILE"
+	echo "chnroutes_file|国内路由表文件|skip|${reason}|" >>"$STEP_FILE"
+	echo "chnroutes_fmt|国内路由表格式|skip|${reason}|" >>"$STEP_FILE"
+	echo "chnroutes_data|国内路由表数据|skip|${reason}|" >>"$STEP_FILE"
+	echo "wg_iface|WireGuard VPN 接口|skip|${reason}|" >>"$STEP_FILE"
+	echo "wg_hs|WireGuard 握手|skip|${reason}|" >>"$STEP_FILE"
+	echo "vpn_traffic|VPN 隧道通讯|skip|${reason}|" >>"$STEP_FILE"
+	echo "dnsmasq_vpn|VPN DNS 配置（dnsmasq）|skip|${reason}|" >>"$STEP_FILE"
+	echo "vpn_dns_upstream|VPN 通道 DNS 解析|skip|${reason}|" >>"$STEP_FILE"
+	_write_state running
+}
+
+_run_diag() {
+	local NET_IF ip dev gw dns vp enabled url brand free cnt vrd
+
+	STEP_FILE=$(mktemp)
+	trap 'rm -f "$STEP_FILE"' EXIT
+
+	FAULTS_JSON=""
+	VPN_HEALTHY="false"
+	ACCOUNT_AUTH_ST=""
+	DIAG_STEP_IDX=0
+	DIAG_STEP_TOTAL=27
+	ZT_ID=$(_zt_node_id); ZT_ID=${ZT_ID:-}
+	DEV_SN=$(_device_sn); DEV_SN=${DEV_SN:-}
+
+	: >"$STEP_FILE"
+	_write_state running
+
+	_step_running overlay "存储分区（overlay）"
+	if [ -d /overlay ] && touch /overlay/.gogogo_luci_diag 2>/dev/null; then
+		rm -f /overlay/.gogogo_luci_diag 2>/dev/null
+		_step_end overlay "存储分区（overlay）" ok "overlay 可写，配置可保存" ""
+	elif df /overlay 2>/dev/null | grep -q overlay; then
+		_step_end overlay "存储分区（overlay）" fail "overlay 分区不可写" "存储分区不可写，配置无法保存"
+	else
+		_step_end overlay "存储分区（overlay）" warn "未检测到 overlay" ""
+	fi
+
+	_step_running rootfs "根文件系统空间"
+	if df / 2>/dev/null | awk 'NR==2 { if ($4+0 < 512) exit 1; exit 0 }'; then
+		free=$(df / 2>/dev/null | awk 'NR==2 { print $4 }')
+		_step_end rootfs "根文件系统空间" ok "可用空间约 ${free} KB" ""
+	else
+		_step_end rootfs "根文件系统空间" fail "根分区可用空间不足" "根分区空间不足，可能导致服务异常"
+	fi
+
+	_step_running uci_cpe "VPN 配置（UCI）"
+	if _uci_ok; then
+		_step_end uci_cpe "VPN 配置（UCI）" ok "配置可读" ""
+	else
+		_step_end uci_cpe "VPN 配置（UCI）" fail "配置缺失或损坏" "VPN 配置损坏，请执行 gogogo-cred repair 或重启"
+	fi
+
+	network_find_wan NET_IF || NET_IF="wan"
+
+	_step_running uci_net "网络配置（UCI）"
+	if uci -q get "network.${NET_IF}" >/dev/null 2>&1; then
+		_step_end uci_net "网络配置（UCI）" ok "WAN 逻辑接口：${NET_IF}" ""
+	else
+		_step_end uci_net "网络配置（UCI）" fail "未找到 WAN 配置" "网络 UCI 缺少 WAN 配置"
+	fi
+
+	_step_running wan_link "WAN 口链路状态"
+	network_get_device dev "$NET_IF" 2>/dev/null
+	dev=${dev:-$NET_IF}
+	if ip link show "$dev" 2>/dev/null | grep -qE 'state (UP|UNKNOWN)'; then
+		_step_end wan_link "WAN 口链路状态" ok "接口 ${dev} 已连接" ""
+	else
+		_step_end wan_link "WAN 口链路状态" fail "接口 ${dev} 未 UP" "WAN 口未连接，请检查网线"
+	fi
+
+	_step_running wan_ip "WAN IP 地址"
+	if _retry_wan_ip; then
+		_step_end wan_ip "WAN IP 地址" ok "已获取 IP" ""
+	else
+		_step_end wan_ip "WAN IP 地址" fail "未获取 WAN IP" "WAN 未获取 IP，无法访问互联网"
+	fi
+
+	_step_running wan_gw "默认网关"
+	if _retry_wan_gateway; then
+		gw=$(wan_gateway 2>/dev/null)
+		_step_end wan_gw "默认网关" ok "网关已获取" ""
+	else
+		_step_end wan_gw "默认网关" fail "未获取默认网关" "无默认网关，无法访问外网"
+	fi
+
+	_step_running wan_ping_cn "WAN IP 连通性（国内）"
+	if _retry_ping "WAN IP 连通性（国内）" 223.5.5.5; then
+		_step_end wan_ping_cn "WAN IP 连通性（国内）" ok "可 ping 通国内地址" ""
+	else
+		_step_end wan_ping_cn "WAN IP 连通性（国内）" fail "无法 ping 通国内地址" "WAN 无法访问互联网，请检查上级网络"
+	fi
+
+	_step_running wan_ping_abroad "WAN IP 连通性（国际）"
+	if _retry_ping "WAN IP 连通性（国际）" 8.8.4.4; then
+		_step_end wan_ping_abroad "WAN IP 连通性（国际）" ok "可 ping 通国际地址" ""
+	else
+		_step_end wan_ping_abroad "WAN IP 连通性（国际）" warn "无法 ping 通国际地址（可能被屏蔽 ICMP）" ""
+	fi
+
+	_step_running wan_dns_srv "WAN DNS 服务器"
+	dns=$(wan_dns_usable 2>/dev/null | head -1)
+	if [ -n "$dns" ]; then
+		_step_end wan_dns_srv "WAN DNS 服务器" ok "DNS 已配置" ""
+	else
+		_step_end wan_dns_srv "WAN DNS 服务器" fail "未配置可用 DNS" "WAN 未获取 DNS，无法解析域名"
+	fi
+
+	_step_running wan_dns_resolve "WAN DNS 解析"
+	if [ -n "$dns" ] && _retry_dns_resolve "$dns" www.baidu.com; then
+		_step_end wan_dns_resolve "WAN DNS 解析" ok "WAN DNS 解析正常" ""
+	elif _retry_dns_resolve "" www.baidu.com; then
+		_step_end wan_dns_resolve "WAN DNS 解析" ok "系统 DNS 解析正常" ""
+	else
+		_step_end wan_dns_resolve "WAN DNS 解析" fail "WAN DNS 解析失败" "WAN DNS 无法解析域名"
+	fi
+
+	_step_running time "系统时间"
+	if [ "$(date +%Y 2>/dev/null)" -ge 2024 ] 2>/dev/null; then
+		_step_end time "系统时间" ok "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)" ""
+	else
+		_step_end time "系统时间" fail "系统时间异常" "系统时间未同步，TLS/VPN 可能失败"
+	fi
+
+	_step_running cloud_url "云端 API 配置"
+	url=$(/usr/sbin/gogogo-url get 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+	if [ -n "$url" ]; then
+		brand=$(_brand_from_url "$url")
+		if [ -n "$brand" ]; then
+			_step_end cloud_url "云端 API 配置" ok "已配置 (${brand})" ""
+		else
+			_step_end cloud_url "云端 API 配置" ok "已配置" ""
+		fi
+	else
+		_step_end cloud_url "云端 API 配置" fail "未配置" "未配置云端 API，无法鉴权与连接 VPN"
+	fi
+
+	_step_running account_auth "VPN 账号鉴权"
+	_account_auth_check
+
+	_step_running vpn_enable "VPN 开机启动"
+	if _enabled; then
+		_step_end vpn_enable "VPN 开机启动" ok "已启用" ""
+		enabled=1
+	else
+		_step_end vpn_enable "VPN 开机启动" skip "未启用" ""
+		enabled=0
+	fi
+
+	if [ "$enabled" != 1 ]; then
+		_skip_vpn_steps
+	elif _vpn_stack_blocked; then
+		_block_vpn_downstream_steps "账号鉴权未通过，跳过"
+	else
+		_step_running cped "VPN 看门狗（gogogod）"
+		if _gogogo_cped_alive; then
+			_step_end cped "VPN 看门狗（gogogod）" ok "cped 正在运行" ""
+		else
+			_step_end cped "VPN 看门狗（gogogod）" fail "cped 未运行" "VPN 看门狗未运行"
+		fi
+
+		_step_running cpe_main "VPN 主进程"
+		if _gogogo_main_alive; then
+			_step_end cpe_main "VPN 主进程" ok "cpe 主循环正在运行" ""
+		else
+			_step_end cpe_main "VPN 主进程" fail "cpe 主循环未运行" "VPN 主进程未运行，VPN 接口可能无法创建"
+		fi
+
+		_step_running chnroutes_file "国内路由表文件"
+		if _chnroutes_file_exists; then
+			_step_end chnroutes_file "国内路由表文件" ok "文件存在" ""
+		else
+			_step_end chnroutes_file "国内路由表文件" fail "文件不存在" "国内路由表文件不存在"
+		fi
+
+		_step_running chnroutes_fmt "国内路由表格式"
+		if _chnroutes_fmt_ok; then
+			cnt=$(_chnroutes_valid_lines)
+			_step_end chnroutes_fmt "国内路由表格式" ok "格式正常（${cnt} 条）" ""
+		else
+			if ! _chnroutes_file_exists; then
+				_step_end chnroutes_fmt "国内路由表格式" skip "文件不存在" ""
+			else
+				_step_end chnroutes_fmt "国内路由表格式" fail "格式异常" "国内路由表格式异常或为空"
+			fi
+		fi
+
+		_step_running chnroutes_data "国内路由表数据"
+		if _chnroutes_loaded; then
+			cnt=$(_chnroutes_valid_lines)
+			_step_end chnroutes_data "国内路由表数据" ok "已加载 ${cnt} 条路由" ""
+		else
+			if ! _chnroutes_file_exists; then
+				_step_end chnroutes_data "国内路由表数据" skip "文件不存在" ""
+			elif ! _chnroutes_fmt_ok; then
+				_step_end chnroutes_data "国内路由表数据" skip "格式异常" ""
+			else
+				cnt=$(_chnroutes_valid_lines)
+				_step_end chnroutes_data "国内路由表数据" fail "路由条数不足" "国内路由表未就绪（仅 ${cnt} 条，分流可能异常）"
+			fi
+		fi
+
+		vp=$(_vpname)
+		_step_running wg_iface "WireGuard VPN 接口"
+		if ip link show "$vp" >/dev/null 2>&1; then
+			_step_end wg_iface "WireGuard VPN 接口" ok "接口 ${vp} 已创建" ""
+		else
+			_step_end wg_iface "WireGuard VPN 接口" fail "接口未创建" "WireGuard VPN 接口未创建"
+		fi
+
+		_step_running wg_hs "WireGuard 握手"
+		if _wg_handshake_ok; then
+			_step_end wg_hs "WireGuard 握手" ok "与服务器握手正常" ""
+		else
+			_step_end wg_hs "WireGuard 握手" fail "握手失败或已过期" "WireGuard 未建立有效握手"
+		fi
+
+		_step_running vpn_traffic "VPN 隧道通讯"
+		if ! ip link show "$vp" >/dev/null 2>&1; then
+			_step_end vpn_traffic "VPN 隧道通讯" skip "VPN 接口未创建" ""
+		elif ! _wg_handshake_ok; then
+			_step_end vpn_traffic "VPN 隧道通讯" skip "需先完成握手" ""
+		elif _vpn_server_comm_ok; then
+			_step_end vpn_traffic "VPN 隧道通讯" ok "隧道收发正常" ""
+		else
+			_step_end vpn_traffic "VPN 隧道通讯" fail "隧道无法正常通讯（已重试 ${DIAG_NET_RETRY_MAX} 次）" "VPN服务器通讯异常"
+		fi
+
+		_step_running dnsmasq_vpn "VPN DNS 配置（dnsmasq）"
+		if ! _wg_handshake_ok; then
+			_step_end dnsmasq_vpn "VPN DNS 配置（dnsmasq）" skip "需先完成 VPN 握手" ""
+		elif [ -f "$DNSMASQ_DROPIN" ] && grep -q '^server=' "$DNSMASQ_DROPIN" 2>/dev/null; then
+			if pidof dnsmasq >/dev/null 2>&1; then
+				_step_end dnsmasq_vpn "VPN DNS 配置（dnsmasq）" ok "dnsmasq 已加载 VPN DNS 配置" ""
+			else
+				_step_end dnsmasq_vpn "VPN DNS 配置（dnsmasq）" fail "dnsmasq 未运行" "dnsmasq 未运行，VPN DNS 无法生效"
+			fi
+		else
+			_step_end dnsmasq_vpn "VPN DNS 配置（dnsmasq）" fail "未加载 VPN DNS 配置" "VPN DNS 配置未写入 dnsmasq"
+		fi
+
+		_step_running vpn_dns_upstream "VPN 通道 DNS 解析"
+		if ! _vpn_server_comm_ok_once; then
+			_step_end vpn_dns_upstream "VPN 通道 DNS 解析" skip "需先恢复 VPN 隧道通讯" ""
+		else
+			vrd=$(_vpn_remote_dns)
+			if [ -z "$vrd" ]; then
+				_step_end vpn_dns_upstream "VPN 通道 DNS 解析" fail "未获取 VPN DNS 上游" "VPN 通道 DNS 上游未配置"
+			elif _vpn_dns_upstream_ok; then
+				_step_end vpn_dns_upstream "VPN 通道 DNS 解析" ok "VPN DNS 上游解析正常" ""
+				VPN_HEALTHY="true"
+			else
+				_step_end vpn_dns_upstream "VPN 通道 DNS 解析" fail "VPN DNS 上游无响应（已重试 ${DIAG_NET_RETRY_MAX} 次）" "VPN 通道 DNS 服务器异常"
+			fi
+		fi
+	fi
+
+	_step_running device_id "设备 ID"
+	if [ -n "$ZT_ID" ]; then
+		_step_end device_id "设备 ID" ok "$ZT_ID" ""
+	else
+		_step_end device_id "设备 ID" warn "暂不可用" ""
+	fi
+
+	_step_running device_sn "出厂序列号（SN）"
+	if [ -n "$DEV_SN" ]; then
+		_step_end device_sn "出厂序列号（SN）" ok "$DEV_SN" ""
+	else
+		_step_end device_sn "出厂序列号（SN）" skip "未写入 U-Boot sn" ""
+	fi
+
+	CURRENT_TITLE=""
+	CURRENT_DETAIL=""
+	_write_state done
+	rm -f "$DIAG_PID"
+}
+
+_cmd_worker() {
+	exec 9>"$DIAG_LOCK"
+	flock -n 9 || exit 0
+	echo $$ >"$DIAG_PID"
+	_run_diag
+}
+
+_cmd_start() {
+	if _diag_pid_alive; then
+		[ -f "$DIAG_STATE" ] && cat "$DIAG_STATE"
+		return 0
+	fi
+	rm -f "$DIAG_PID"
+	printf '%s' '{"state":"running","vpn_healthy":false,"progress":0,"progress_total":27,"progress_pct":0,"faults":[],"steps":[],"current":{"title":"准备诊断","detail":"正在启动"}}' >"${DIAG_STATE}.tmp"
+	mv "${DIAG_STATE}.tmp" "$DIAG_STATE"
+	# 双 fork：避免 ash 在 start 退出时等待后台任务（LuCI 请求会卡到诊断结束）
+	( ( "$0" worker </dev/null >/dev/null 2>&1 & ) & )
+	cat "$DIAG_STATE"
+}
+
+_cmd_poll() {
+	[ -f "$DIAG_STATE" ] && cat "$DIAG_STATE" && return 0
+	printf '%s\n' '{"state":"idle","vpn_healthy":false,"progress":0,"progress_total":27,"progress_pct":0,"faults":[],"steps":[]}'
+}
+
+case "${1:-poll}" in
+	start) _cmd_start ;;
+	poll) _cmd_poll ;;
+	worker) _cmd_worker ;;
+	*) echo "Usage: $0 start|poll" >&2; exit 1 ;;
+esac

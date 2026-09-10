@@ -1,0 +1,701 @@
+<%#
+	luci-app-gogogo — GOGOGOFUTURE CPE client
+-%>
+<%+header%>
+
+<style type="text/css">
+	#gogogo-app { max-width: 960px; }
+	#gogogo-app .nsc-status {
+		margin: 0 0 1em;
+		padding: .85em 1em 1em;
+		border-radius: 10px;
+		background: var(--nros-surface, #f6f6f6);
+		border: 1px solid var(--nros-border, #e5e5e5);
+		border-left: 4px solid #999;
+	}
+	#gogogo-app .nsc-ok { border-left-color: var(--nros-success, #46a546); background: var(--nros-success-soft, #f3faf3); }
+	#gogogo-app .nsc-wait { border-left-color: var(--nros-warning, #f89406); background: var(--nros-warning-soft, #fff8ee); }
+	#gogogo-app .nsc-off { border-left-color: var(--nros-neutral, #999); }
+	#gogogo-app .nsc-err { border-left-color: var(--nros-danger, #c00); background: var(--nros-danger-soft, #fff5f5); }
+	#gogogo-app .nsc-state { font-size: 1.15em; font-weight: 600; margin: 0 0 .7em; }
+	#gogogo-app .nsc-rows {
+		display: grid;
+		grid-template-columns: 5.5em 1fr;
+		gap: .4em .9em;
+		align-items: baseline;
+		font-size: 90%;
+		color: var(--nros-text, #333);
+	}
+	#gogogo-app .nsc-k { color: var(--nros-text-3, #888); }
+	#gogogo-app .nsc-msg { margin: .2em 0 1em; min-height: 1.2em; color: var(--nros-text-2, #555); }
+	#gogogo-app .nsc-msg--ok { color: var(--nros-success, #2a2); }
+	#gogogo-app .nsc-msg--err { color: var(--nros-danger, #c00); }
+	#gogogo-app .nsc-actions { display: flex; flex-wrap: wrap; gap: .5em; margin-top: .8em; }
+	#gogogo-app .nsc-meta,
+	#gogogo-app .nsc-hint { color: var(--nros-text-3, #888); font-size: 85%; }
+	#gogogo-app .nsc-hint { margin-top: 4px; }
+	#gogogo-app .nsc-toggle {
+		display: flex;
+		align-items: flex-start;
+		gap: 12px;
+		padding: 10px 0;
+		border-bottom: 1px solid var(--nros-border, #eee);
+	}
+	#gogogo-app .nsc-toggle .nros-switch {
+		flex-shrink: 0;
+		width: 40px;
+		min-width: 40px;
+		height: 22px;
+	}
+	#gogogo-app .nsc-toggle:last-of-type { border-bottom: 0; }
+	#gogogo-app .nsc-toggle__label { font-weight: 500; }
+	#gogogo-app .nsc-exits { list-style: none; margin: .2em 0 .6em; padding: 0; }
+	#gogogo-app .nsc-exits li {
+		display: flex;
+		align-items: center;
+		gap: .6em;
+		padding: .55em .7em;
+		margin: 0 0 .4em;
+		border: 1px solid var(--nros-border, #e5e5e5);
+		border-radius: 8px;
+		background: var(--nros-surface, #fff);
+	}
+	#gogogo-app .nsc-exits li.nsc-on { background: var(--nros-primary-soft, #eef7ee); border-color: transparent; }
+	#gogogo-app .nsc-exits .nsc-name { flex: 1; }
+	#gogogo-app .nsc-badge {
+		display: inline-block;
+		padding: .05em .5em;
+		border-radius: 6px;
+		font-size: 85%;
+		background: var(--nros-success, #46a546);
+		color: #fff;
+	}
+	#gogogo-app .nsc-badge-wait { background: var(--nros-warning, #f89406); }
+	#gogogo-app input[disabled] { opacity: .55; cursor: not-allowed; }
+	#gogogo-app input.nros-btn { width: auto; appearance: none; -webkit-appearance: none; border: 1px solid transparent; }
+	#gogogo-app input.nros-btn.nros-btn--primary {
+		background: var(--nros-primary, #3370FF);
+		color: var(--nros-primary-fg, #fff);
+		border-color: transparent;
+	}
+	#gogogo-app .nsc-step-label { margin-top: 2px; font-size: 12px; font-weight: 500; color: var(--nros-text-3, #6B7280); }
+	#gogogo-app .nsc-tour-target { position: relative; z-index: 5; box-shadow: 0 0 0 3px var(--nros-primary, #3370FF); }
+	#nsc-tour[hidden] { display: none !important; }
+	#nsc-tour { position: fixed; inset: 0; z-index: 80; pointer-events: none; }
+	#nsc-tour-pop {
+		position: fixed; z-index: 83; width: min(360px, calc(100vw - 32px));
+		padding: 16px 16px 14px; border-radius: 10px;
+		background: var(--nros-elevated, #fff); border: 1px solid var(--nros-border, #e5e7eb);
+		box-shadow: 0 12px 32px rgba(17,24,39,.12); pointer-events: auto;
+	}
+	#nsc-tour-pop .nsc-tour-kicker { font-size: 11px; font-weight: 600; color: var(--nros-primary, #3370FF); margin-bottom: 4px; }
+	#nsc-tour-pop .nsc-tour-title { font-size: 15px; font-weight: 600; margin: 0 0 6px; }
+	#nsc-tour-pop .nsc-tour-body { margin: 0 0 14px; font-size: 13px; color: var(--nros-text-2, #4B5563); line-height: 1.55; }
+	#nsc-tour-pop .nsc-tour-nav { display: flex; justify-content: flex-end; gap: 8px; }
+</style>
+
+<div id="gogogo-app">
+	<div class="nros-page-head">
+		<div>
+			<h1 class="nros-title" name="content">跨境加速</h1>
+			<p class="nros-subtitle">登录供创未来账号后连接平台分配的加速节点。分流：国内走本地网络，海外走隧道。全局：全部公网走隧道。</p>
+		</div>
+		<div class="nsc-actions" style="margin-top:0">
+			<input type="button" class="nros-btn" id="nsc-guide-start" value="使用引导" />
+			<a class="nros-btn" id="nsc-diag-link" href="<%=luci.dispatcher.build_url("admin", "gogogo", "diagnostics")%>">连接诊断</a>
+		</div>
+	</div>
+
+	<div id="nsc-status" class="nsc-status nsc-off">正在读取状态…</div>
+	<div id="nsc-msg" class="nsc-msg"></div>
+
+	<div class="nros-grid nros-grid--2">
+		<section class="nros-card" id="nsc-card-account">
+			<div class="nros-card__hd">
+				<div>
+					<div class="nros-section-title">账号</div>
+					<div class="nsc-step-label">第 1 步 · 登录平台账号</div>
+				</div>
+			</div>
+			<div class="nros-card__bd">
+				<div class="nros-field">
+					<label for="nsc-account">账号</label>
+					<input class="nros-input" type="text" id="nsc-account" value="admin" autocomplete="username" />
+				</div>
+				<div class="nros-field">
+					<label for="nsc-password">密码</label>
+					<input class="nros-input" type="password" id="nsc-password" autocomplete="current-password" />
+					<span class="nsc-hint">已保存过则可留空</span>
+				</div>
+				<div class="nsc-actions">
+					<input type="button" class="nros-btn nros-btn--primary" id="nsc-login" value="登录" />
+					<input type="button" class="nros-btn" id="nsc-refresh-account" value="刷新到期时间" />
+				</div>
+				<div class="nsc-toggle">
+					<label class="nros-switch">
+						<input type="checkbox" id="nsc-enable" />
+						<span></span>
+					</label>
+					<div>
+						<div class="nsc-toggle__label">开机连接</div>
+						<div class="nsc-hint">WAN 就绪后自动连接平台分配的节点</div>
+					</div>
+				</div>
+				<div class="nsc-toggle">
+					<label class="nros-switch">
+						<input type="checkbox" id="nsc-split" checked="checked" />
+						<span></span>
+					</label>
+					<div>
+						<div class="nsc-toggle__label">分流模式</div>
+						<div class="nsc-hint">国内网站直连，海外走隧道</div>
+					</div>
+				</div>
+				<div class="nsc-toggle">
+					<label class="nros-switch">
+						<input type="checkbox" id="nsc-killswitch" />
+						<span></span>
+					</label>
+					<div>
+						<div class="nsc-toggle__label">防 DNS 泄露</div>
+						<div class="nsc-hint">开启后 DNS 仅走海外解析，不做国内/海外 DNS 分流。可与全局一起用；分流时国内 IP 仍直连，但域名解析走海外。默认关闭。</div>
+					</div>
+				</div>
+			</div>
+		</section>
+
+		<section class="nros-card" id="nsc-card-exits">
+			<div class="nros-card__hd">
+				<div>
+					<div class="nros-section-title">加速节点</div>
+					<div class="nsc-step-label">第 2 步 · 连接平台节点</div>
+				</div>
+			</div>
+			<div class="nros-card__bd">
+				<div id="nsc-empty" class="nsc-meta">登录后显示平台分配的节点…</div>
+				<ul class="nsc-exits" id="nsc-list" style="display:none"></ul>
+				<div class="nsc-actions">
+					<input type="button" class="nros-btn nros-btn--primary" id="nsc-connect" value="连接" />
+					<input type="button" class="nros-btn" id="nsc-disconnect" value="断开" />
+				</div>
+			</div>
+		</section>
+	</div>
+</div>
+
+<div id="nsc-tour" hidden>
+	<div id="nsc-tour-pop" role="dialog" aria-modal="true" aria-labelledby="nsc-tour-title">
+		<div class="nsc-tour-kicker" id="nsc-tour-kicker"></div>
+		<div class="nsc-tour-title" id="nsc-tour-title"></div>
+		<p class="nsc-tour-body" id="nsc-tour-body"></p>
+		<div class="nsc-tour-nav">
+			<input type="button" class="nros-btn" id="nsc-tour-skip" value="跳过" />
+			<input type="button" class="nros-btn nros-btn--primary" id="nsc-tour-next" value="下一步" />
+		</div>
+	</div>
+</div>
+
+<script type="text/javascript">//<![CDATA[
+(function() {
+	var U_STATUS = '<%=luci.dispatcher.build_url("admin", "gogogo", "status")%>';
+	var U_LOGIN = '<%=luci.dispatcher.build_url("admin", "gogogo", "login")%>';
+	var U_CONNECT = '<%=luci.dispatcher.build_url("admin", "gogogo", "connect")%>';
+	var U_DISCONNECT = '<%=luci.dispatcher.build_url("admin", "gogogo", "disconnect")%>';
+	var U_SAVE = '<%=luci.dispatcher.build_url("admin", "gogogo", "save")%>';
+	var U_REFRESH = '<%=luci.dispatcher.build_url("admin", "gogogo", "refresh_account")%>';
+	var TOKEN = '<%=token%>';
+	var CACHED = <% luci.http.write(status_cache_json or "{}") %>;
+
+	var lastStatus = null;
+	var busy = false;
+	var connecting = false;
+	var accountFilled = false;
+	var GUIDE_KEY = 'gogogo-vpn-guide';
+	var GUIDE_STEPS = [
+		{
+			target: 'nsc-card-account',
+			kicker: '两步连接  1 / 2',
+			title: '先登录账号',
+			body: '填写供创未来平台账号和密码，点「登录」。登录成功后会显示到期时间和平台分配的加速节点。已保存过密码则可留空。'
+		},
+		{
+			target: 'nsc-card-exits',
+			kicker: '两步连接  2 / 2',
+			title: '再连接节点',
+			body: '节点由平台按账号分配，无需自选区域。点「连接」建立隧道。也可以打开「开机连接」，WAN 就绪后自动接入。'
+		}
+	];
+	var guideStep = -1;
+	var guideOn = false;
+
+	function $(id) { return document.getElementById(id); }
+
+	function esc(s) {
+		return String(s == null ? '' : s)
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;')
+			.replace(/'/g, '&#39;');
+	}
+
+	function bytes(n) {
+		n = parseFloat(n) || 0;
+		if (n < 1024) return Math.round(n) + ' B';
+		var u = ['KiB', 'MiB', 'GiB', 'TiB'], i = 0;
+		n /= 1024;
+		while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+		return n.toFixed(1) + ' ' + u[i];
+	}
+
+	function setMsg(text, isErr) {
+		var el = $('nsc-msg');
+		el.textContent = text || '';
+		el.className = 'nsc-msg' + (text ? (isErr ? ' nsc-msg--err' : ' nsc-msg--ok') : '');
+	}
+
+	function asBool(v) {
+		return v === true || v === 1 || v === '1';
+	}
+
+	function updateButtons() {
+		var st = lastStatus || {};
+		var connBtn = $('nsc-connect');
+		var discBtn = $('nsc-disconnect');
+		if (busy) return;
+		$('nsc-login').disabled = false;
+		discBtn.disabled = !st.connected;
+		connBtn.disabled = false;
+		if (st.connected && st.handshake)
+			connBtn.value = '重新连接';
+		else if (st.connected)
+			connBtn.value = '等待握手';
+		else
+			connBtn.value = '连接';
+	}
+
+	function renderNodes(st) {
+		var list = $('nsc-list');
+		var empty = $('nsc-empty');
+		var nodes = (st && st.nodes) || [];
+		list.innerHTML = '';
+		if (!nodes.length && !(st && (st.account || st.expired_text))) {
+			list.style.display = 'none';
+			empty.style.display = '';
+			empty.textContent = '登录后显示平台分配的节点…';
+			updateButtons();
+			return;
+		}
+		empty.style.display = 'none';
+		list.style.display = '';
+		var n = nodes[0] || { name: '平台分配节点', endpoint: st && st.endpoint };
+		var li = document.createElement('li');
+		var on = !!(st && st.connected);
+		var wait = !!(st && st.connected && !st.handshake);
+		if (on || connecting) li.className = 'nsc-on';
+		var badge = '';
+		if (connecting) badge = '<span class="nsc-badge nsc-badge-wait">连接中</span>';
+		else if (on && wait) badge = '<span class="nsc-badge nsc-badge-wait">握手中</span>';
+		else if (on) badge = '<span class="nsc-badge">当前</span>';
+		li.innerHTML =
+			'<span class="nsc-name">' + esc(n.name || '平台分配节点') + '</span>' +
+			(n.endpoint ? '<span class="nsc-meta">' + esc(n.endpoint) + '</span>' : '') +
+			badge;
+		list.appendChild(li);
+		updateButtons();
+	}
+
+	function row(k, v) {
+		if (!v) return '';
+		return '<span class="nsc-k">' + esc(k) + '</span><span>' + esc(v) + '</span>';
+	}
+
+	function renderStatus(st) {
+		if (!st) return;
+		lastStatus = st;
+		var box = $('nsc-status');
+		var state, cls;
+		if (connecting) {
+			state = '正在连接平台节点';
+			cls = 'nsc-wait';
+		} else if (st.connected && st.handshake) {
+			state = '已连接';
+			cls = 'nsc-ok';
+		} else if (st.connected) {
+			state = '连接中，等待握手';
+			cls = 'nsc-wait';
+		} else if (st.block_reason) {
+			state = st.block_reason;
+			cls = 'nsc-err';
+		} else {
+			state = '未连接';
+			cls = 'nsc-off';
+		}
+
+		var acc = st.login_account || st.account || '';
+		var traffic = '';
+		if (st.connected && !connecting)
+			traffic = '↓ ' + bytes(st.rx) + '　↑ ' + bytes(st.tx);
+
+		box.className = 'nsc-status ' + cls;
+		box.innerHTML = '<div class="nsc-state">' + esc(state) + '</div><div class="nsc-rows">' +
+			row('账号', acc) +
+			row('节点', '平台分配') +
+			row('模式', asBool(st.split) ? '分流（国内直连）' : '全局') +
+			row('防 DNS 泄露', asBool(st.killswitch) ? '已开启' : '关闭') +
+			row('端点', st.endpoint || '') +
+			row('到期', st.expired_text || st.description || '') +
+			row('流量', traffic) +
+			'</div>';
+
+		if (!accountFilled && acc) {
+			$('nsc-account').value = acc;
+			accountFilled = true;
+		}
+		$('nsc-enable').checked = asBool(st.enable) || asBool(st.want);
+		if ($('nsc-split')) $('nsc-split').checked = asBool(st.split) || st.split === undefined;
+		if ($('nsc-killswitch')) $('nsc-killswitch').checked = asBool(st.killswitch);
+		renderNodes(st);
+	}
+
+	function scrub(s) {
+		s = String(s == null ? '' : s);
+		s = s.replace(/[\u0000-\u001F\u007F\u200B-\u200F\uFEFF]/g, '');
+		s = s.replace(/[\u00A0\u3000]/g, ' ');
+		s = s.replace(/^[ \t]+|[ \t]+$/g, '');
+		s = s.replace(/^[\"'`<]+/, '').replace(/[\"'`>]+$/, '');
+		return s.replace(/^[ \t]+|[ \t]+$/g, '');
+	}
+
+	function bindClean(id) {
+		var el = $(id);
+		if (!el) return;
+		var clean = function() {
+			var v = scrub(el.value);
+			if (el.value !== v) el.value = v;
+		};
+		el.addEventListener('blur', clean);
+		el.addEventListener('paste', function() { setTimeout(clean, 0); });
+	}
+
+	function post(url, fields, cb) {
+		var data = { token: TOKEN };
+		for (var k in fields) data[k] = fields[k];
+		new XHR().post(url, data, function(x, json) {
+			cb(json || {}, x);
+		});
+	}
+
+	function collect() {
+		return {
+			account: scrub($('nsc-account').value),
+			password: scrub($('nsc-password').value),
+			enable: $('nsc-enable').checked ? '1' : '0',
+			split: ($('nsc-split') && $('nsc-split').checked) ? '1' : '0',
+			killswitch: ($('nsc-killswitch') && $('nsc-killswitch').checked) ? '1' : '0'
+		};
+	}
+
+	function refreshStatus(cb) {
+		new XHR().get(U_STATUS, null, function(x, st) {
+			renderStatus(st);
+			if (cb) cb(st);
+		});
+	}
+
+	bindClean('nsc-account');
+	bindClean('nsc-password');
+
+	function withBusy(btn, work) {
+		if (busy) return;
+		busy = true;
+		var btns = [$('nsc-login'), $('nsc-connect'), $('nsc-disconnect'), $('nsc-refresh-account')];
+		var old = [];
+		for (var i = 0; i < btns.length; i++) {
+			if (!btns[i]) continue;
+			old[i] = btns[i].value;
+			btns[i].disabled = true;
+		}
+		if (btn) btn.value = connecting ? '连接中…' : '处理中…';
+		work(function() {
+			busy = false;
+			connecting = false;
+			for (var j = 0; j < btns.length; j++) {
+				if (!btns[j]) continue;
+				btns[j].disabled = false;
+				if (old[j] != null) btns[j].value = old[j];
+			}
+			updateButtons();
+		});
+	}
+
+	function waitUntilLogin(account, n, done) {
+		n = n || 0;
+		refreshStatus(function(st) {
+			var pending = !!(st && st.login_pending);
+			var res = st && st.login_result;
+			if (pending) {
+				if (n >= 30) {
+					done(false, st, '登录超时，请稍后重试');
+					return;
+				}
+				setTimeout(function() { waitUntilLogin(account, n + 1, done); }, 1000);
+				return;
+			}
+			if (res && res.ok === false) {
+				done(false, st, res.msg || '登录失败');
+				return;
+			}
+			if (res && res.ok) {
+				done(true, st, res.msg || '登录成功');
+				return;
+			}
+			if (n >= 2 && st && st.block_reason) {
+				done(false, st, st.block_reason);
+				return;
+			}
+			if (st && (st.expired_text || st.description) && n >= 1) {
+				done(true, st, st.expired_text || st.description);
+				return;
+			}
+			if (n >= 20) {
+				done(false, st, '登录超时，请稍后重试');
+				return;
+			}
+			setTimeout(function() { waitUntilLogin(account, n + 1, done); }, 1000);
+		});
+	}
+
+	$('nsc-refresh-account').onclick = function() {
+		var btn = this;
+		withBusy(btn, function(done) {
+			setMsg('正在刷新到期时间…');
+			post(U_REFRESH, collect(), function(j) {
+				if (!j) {
+					setMsg('刷新失败：无有效响应', true);
+					done();
+					return;
+				}
+				var desc = j.description || j.msg || '';
+				if (j.status === 'ok' || j.ok) {
+					if (desc.indexOf('到期时间') === 0)
+						setMsg('已更新到期时间：' + desc.replace(/^到期时间：\s*/, ''));
+					else
+						setMsg(desc || '账号信息已更新');
+				} else if (j.status === 'rate_limited') {
+					setMsg('操作过于频繁，请 1 分钟后再试。', true);
+				} else if (j.status === 'busy') {
+					setMsg('正在刷新，请稍候再试。', true);
+				} else if (j.status === 'hint') {
+					setMsg(desc || '请先填写账号和密码。', true);
+				} else {
+					setMsg(desc || '刷新失败，请核对账号或网络。', true);
+				}
+				refreshStatus();
+				done();
+			});
+		});
+	};
+
+	$('nsc-login').onclick = function() {
+		var btn = this;
+		var acc = scrub($('nsc-account').value);
+		if (!acc) { setMsg('请填写账号', true); return; }
+		withBusy(btn, function(done) {
+			setMsg('正在登录…');
+			post(U_LOGIN, collect(), function(j) {
+				if (j && j.ok === false && !j.pending) {
+					setMsg((j && j.msg) || '登录失败', true);
+					done();
+					return;
+				}
+				waitUntilLogin(acc, 0, function(ok, st, msg) {
+					if (ok) {
+						setMsg(msg || '登录成功');
+						if (guideOn && guideStep === 0)
+							showGuideStep(1);
+					} else {
+						setMsg(msg || '登录失败', true);
+					}
+					refreshStatus();
+					done();
+				});
+			});
+		});
+	};
+
+	function waitUntilUp(n, done) {
+		n = n || 0;
+		refreshStatus(function(st) {
+			if (st && st.connected && st.handshake) {
+				setMsg('已连接到平台节点');
+				done(true);
+				return;
+			}
+			if (n >= 2 && st && st.block_reason && !st.connected) {
+				setMsg(st.block_reason, true);
+				done(false);
+				return;
+			}
+			if (n >= 24) {
+				setMsg('连接超时，请稍后重试', true);
+				done(false);
+				return;
+			}
+			setTimeout(function() { waitUntilUp(n + 1, done); }, 1000);
+		});
+	}
+
+	$('nsc-connect').onclick = function() {
+		var btn = this;
+		connecting = true;
+		withBusy(btn, function(done) {
+			setMsg('正在连接平台节点…');
+			if (lastStatus) renderStatus(lastStatus);
+			post(U_CONNECT, collect(), function(j) {
+				if (j && j.ok === false && j.msg && j.msg !== '无有效响应') {
+					connecting = false;
+					setMsg(j.msg, true);
+					refreshStatus();
+					done();
+				}
+			});
+			waitUntilUp(0, function() {
+				connecting = false;
+				refreshStatus();
+				done();
+				if (guideOn)
+					endGuide(true);
+			});
+		});
+	};
+
+	$('nsc-disconnect').onclick = function() {
+		var btn = this;
+		withBusy(btn, function(done) {
+			setMsg('正在断开…');
+			post(U_DISCONNECT, { token: TOKEN }, function(j) {
+				if (j && (j.ok || j.connected === false)) setMsg(j.msg || '已断开');
+				else setMsg((j && j.msg) || '断开失败', true);
+				refreshStatus();
+				done();
+			});
+		});
+	};
+
+	function saveFlag(fields, okMsg, errEl) {
+		post(U_SAVE, fields, function(j) {
+			if (j && (j.ok || j.account != null)) {
+				setMsg(okMsg);
+				refreshStatus();
+			} else {
+				if (errEl) errEl.checked = !errEl.checked;
+				setMsg((j && j.msg) || '保存失败', true);
+			}
+		});
+	}
+
+	$('nsc-enable').onchange = function() {
+		var on = this.checked;
+		saveFlag({ enable: on ? '1' : '0' }, on ? '已开启开机连接' : '已关闭开机连接');
+	};
+	$('nsc-split').onchange = function() {
+		var on = this.checked;
+		setMsg(on ? '正在切换到分流…' : '正在切换到全局…');
+		saveFlag({ split: on ? '1' : '0' }, on ? '已开启分流：国内直连，海外走隧道' : '已切换为全局：全部公网走隧道');
+	};
+	$('nsc-killswitch').onchange = function() {
+		var on = this.checked;
+		setMsg(on ? '正在开启防 DNS 泄露…' : '正在关闭防 DNS 泄露…');
+		saveFlag({ killswitch: on ? '1' : '0' }, on ? '已开启防 DNS 泄露' : '已关闭防 DNS 泄露', this);
+	};
+
+	$('nsc-password').onkeydown = function(ev) {
+		ev = ev || window.event;
+		if ((ev.keyCode || ev.which) === 13) {
+			$('nsc-login').click();
+			return false;
+		}
+	};
+
+	function guideDone() {
+		try { return localStorage.getItem(GUIDE_KEY) === 'done'; } catch (e) { return false; }
+	}
+	function markGuideDone() {
+		try { localStorage.setItem(GUIDE_KEY, 'done'); } catch (e) {}
+	}
+	function clearGuideTarget() {
+		var cards = document.querySelectorAll('#gogogo-app .nsc-tour-target');
+		for (var i = 0; i < cards.length; i++)
+			cards[i].classList.remove('nsc-tour-target');
+	}
+	function placeTourPop(target) {
+		var pop = $('nsc-tour-pop');
+		if (!pop || !target) return;
+		var r = target.getBoundingClientRect();
+		var gap = 12;
+		var left = Math.min(Math.max(16, r.left), window.innerWidth - pop.offsetWidth - 16);
+		var top = r.bottom + gap;
+		if (top + pop.offsetHeight > window.innerHeight - 12)
+			top = Math.max(12, r.top - pop.offsetHeight - gap);
+		pop.style.left = left + 'px';
+		pop.style.top = top + 'px';
+	}
+	function showGuideStep(n) {
+		var step = GUIDE_STEPS[n];
+		var root = $('nsc-tour');
+		if (!step || !root) return;
+		guideOn = true;
+		guideStep = n;
+		clearGuideTarget();
+		var target = $(step.target);
+		if (target) {
+			target.classList.add('nsc-tour-target');
+			try { target.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
+		}
+		$('nsc-tour-kicker').textContent = step.kicker;
+		$('nsc-tour-title').textContent = step.title;
+		$('nsc-tour-body').textContent = step.body;
+		$('nsc-tour-next').value = (n >= GUIDE_STEPS.length - 1) ? '完成' : '下一步';
+		root.hidden = false;
+		placeTourPop(target);
+		setTimeout(function() { placeTourPop(target); }, 320);
+	}
+	function endGuide(save) {
+		guideOn = false;
+		guideStep = -1;
+		clearGuideTarget();
+		var root = $('nsc-tour');
+		if (root) root.hidden = true;
+		if (save) markGuideDone();
+	}
+	$('nsc-guide-start').onclick = function() { showGuideStep(0); };
+	$('nsc-tour-skip').onclick = function() { endGuide(true); };
+	$('nsc-tour-next').onclick = function() {
+		if (guideStep >= GUIDE_STEPS.length - 1)
+			endGuide(true);
+		else
+			showGuideStep(guideStep + 1);
+	};
+	document.addEventListener('keydown', function(ev) {
+		if (!guideOn) return;
+		if ((ev.key || ev.keyCode) === 'Escape' || ev.keyCode === 27)
+			endGuide(true);
+	});
+	window.addEventListener('resize', function() {
+		if (guideOn && GUIDE_STEPS[guideStep])
+			placeTourPop($(GUIDE_STEPS[guideStep].target));
+	});
+
+	XHR.poll(5, U_STATUS, null, function(x, st) {
+		if (!busy) renderStatus(st);
+	});
+	if (CACHED && CACHED.ok) renderStatus(CACHED);
+	refreshStatus(function(st) {
+		if (!guideDone() && !(st && st.connected && st.handshake))
+			setTimeout(function() { showGuideStep(0); }, 500);
+	});
+})();
+//]]></script>
+
+<%+footer%>

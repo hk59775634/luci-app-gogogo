@@ -1,0 +1,5 @@
+*.ipk
+*.o
+*.swp
+*~
+release/*.ipk

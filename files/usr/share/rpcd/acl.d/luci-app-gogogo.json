@@ -1,0 +1,31 @@
+{
+	"luci-app-gogogo": {
+		"description": "Grant access to 供创未来 VPN client",
+		"read": {
+			"ubus": {
+				"file": [ "exec", "read" ]
+			},
+			"uci": [ "gogogo", "network" ],
+			"file": {
+				"/usr/sbin/gogogo": [ "exec" ],
+				"/usr/sbin/gogogo-luci-after-save": [ "exec" ],
+				"/usr/sbin/gogogo-luci-diag": [ "exec" ],
+				"/usr/sbin/gogogo-luci-status": [ "exec" ],
+				"/usr/sbin/gogogo-cred": [ "exec" ],
+				"/usr/sbin/gogogo-url": [ "exec" ],
+				"/usr/sbin/gogogo-update": [ "exec" ],
+				"/var/run/gogogo/status.json": [ "read" ]
+			}
+		},
+		"write": {
+			"uci": [ "gogogo", "network" ],
+			"file": {
+				"/usr/sbin/gogogo": [ "exec" ],
+				"/usr/sbin/gogogo-luci-after-save": [ "exec" ],
+				"/usr/sbin/gogogo-luci-diag": [ "exec" ],
+				"/usr/sbin/gogogo-cred": [ "exec" ],
+				"/usr/sbin/gogogo-url": [ "exec" ]
+			}
+		}
+	}
+}

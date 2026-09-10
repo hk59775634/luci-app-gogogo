@@ -1,0 +1,1243 @@
+#!/bin/sh
+# GOGOGO VPN client — UCI config; defaults in /usr/share/gogogo/defaults.sh
+
+. /lib/functions/network.sh
+[ -f /usr/share/gogogo/defaults.sh ] && . /usr/share/gogogo/defaults.sh
+[ -f /usr/share/gogogo/procmgr.sh ] && . /usr/share/gogogo/procmgr.sh
+[ -f /usr/share/gogogo/curl-resolve.sh ] && . /usr/share/gogogo/curl-resolve.sh
+
+CPE_UCI="${CPE_UCI:-gogogo}"
+PID_FILE="${CPE_MAIN_PIDFILE:-/tmp/gogogo.pid}"
+DNSMASQ_DROPIN="/tmp/dnsmasq.d/gogogo-vpn.conf"
+DNSMASQ_DROPIN_LEGACY="/etc/dnsmasq.d/gogogo-vpn.conf"
+DNSMASQ_APPLIED_STAMP="/tmp/gogogo_dnsmasq.applied"
+SPLIT_ROUTES_STAMP="/tmp/gogogo_split_routes.stamp"
+CHNROUTES_FETCH_STAMP="/tmp/gogogo_chnroutes_fetch.stamp"
+RT_TABLES_FILE="/etc/iproute2/rt_tables"
+ROUTE_GUARD_FILE="/etc/gogogo_route_guard_hosts"
+API_HASH_FILE="/tmp/gogogo_api_hash"
+ENDPOINT_HOST_FILE="/tmp/gogogo_endpoint_host"
+ACCOUNT_REFRESH_LOCK="/tmp/gogogo_account_refresh.lock"
+ACCOUNT_REFRESH_RATE_STAMP="/tmp/gogogo_account_refresh.stamp"
+ACCOUNT_REFRESH_MIN_SEC="${CPE_ACCOUNT_REFRESH_MIN_SEC:-60}"
+
+_load_defaults() {
+	vpname="${VPNAME:-GOGOGO}"
+	base_url="${CPE_DEFAULT_URL_FALLBACK:-https://cpe.gogogofuture.com}"
+	api_user_path="${API_USER_PATH:-/api/v1/user}"
+	lan_bridge="${LAN_BRIDGE:-br-lan}"
+	dns_hijack_to="${DNS_HIJACK_TO:-192.168.10.1}"
+	main_loop_sec="${MAIN_LOOP_SEC:-30}"
+	curl_timeout="${CURL_TIMEOUT:-3}"
+	chnroute_file="${CHNROUTE_FILE:-/etc/gogogo_chnroutes}"
+	route_chn_metric="${ROUTE_CHN_METRIC:-200}"
+	route_table_id="${ROUTE_TABLE_ID:-100}"
+	route_table_name="${ROUTE_TABLE_NAME:-gogogo_cn}"
+	route_rule_pref="${ROUTE_RULE_PREF:-1000}"
+	route_reserved_pref="${ROUTE_RESERVED_PREF:-900}"
+	route_reserved_cidrs="${ROUTE_RESERVED_CIDRS:-0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/4 240.0.0.0/4}"
+	wan_route_metric="${WAN_ROUTE_METRIC:-100}"
+	wg_keepalive="${WG_KEEPALIVE:-25}"
+	wg_hs_max_age="${WG_HANDSHAKE_MAX_AGE:-180}"
+	wg_endpoint_port="${CPE_WG_ENDPOINT_PORT:-2049}"
+	firewall_zone="${FIREWALL_ZONE:-wan}"
+	dns_local_1="${DNS_LOCAL_1:-180.76.76.76}"
+	dns_remote_1="${DNS_REMOTE_1:-8.8.8.8}"
+	dns_local_fallback="${DNS_LOCAL_FALLBACK:-180.76.76.76}"
+}
+
+# 优先 WAN DNS，经 baidu + chnroutes 校验；失败则用后备 180.76.76.76
+_probe_dns_local_1() {
+	local picked
+	[ -x /usr/sbin/gogogo-dns-probe ] || return 0
+	picked=$(/usr/sbin/gogogo-dns-probe pick 2>/dev/null)
+	[ -n "$picked" ] && dns_local_1="$picked" || dns_local_1="$dns_local_fallback"
+}
+
+config_get() {
+	local option="$1" value
+	value=$(uci -q get "${CPE_UCI}.@default[0].${option}")
+	echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+_uci_flag() {
+	case "$(config_get "$1")" in
+		1 | true | yes | on) return 0 ;;
+	esac
+	return 1
+}
+
+_load_api_dns() {
+	local d
+	d=$(config_get dns_server)
+	[ -n "$d" ] && dns_remote_1="$d"
+}
+
+_get_base_url() {
+	gogogo_get_base_url
+}
+
+_apply_uci_overrides() {
+	local u lip
+	u=$(config_get vpname); [ -n "$u" ] && vpname="$u"
+	base_url=$(_get_base_url)
+	lip=$(uci -q get network.lan.ipaddr | awk '{print $1}')
+	[ -n "$lip" ] && dns_hijack_to="$lip"
+}
+
+_uci_set() {
+	# $1=full uci path (pkg.sec.opt), $2=value
+	uci -q set "$1=$2" 2>/dev/null || uci set "$1=$2"
+}
+
+_json_user_payload() {
+	command -v jq >/dev/null 2>&1 || { echo "Error: jq required" >&2; return 1; }
+	jq -n \
+		--arg account "$username" \
+		--arg password "$password" \
+		'{account: $account, password: $password}'
+}
+
+_get_connect_info() {
+	local payload max_time
+	_probe_dns_local_1
+	payload=$(_json_user_payload) || return 1
+	max_time=$((curl_timeout + 2))
+	[ -n "$CPE_DIAG_CURL_TIMEOUT" ] && max_time=$((CPE_DIAG_CURL_TIMEOUT + 2))
+	gogogo_curl "${base_url}${api_user_path}" \
+		--connect-timeout "$curl_timeout" --max-time "$max_time" \
+		--silent --location \
+		-H 'Content-Type: application/json' \
+		-d "$payload"
+}
+
+_find_firewall_zone() {
+	local want="${1:-wan}" z name
+	for z in $(uci show firewall 2>/dev/null | grep '=zone$' | cut -d= -f1); do
+		name=$(uci -q get "${z}.name")
+		[ "$name" = "$want" ] && echo "$z" && return 0
+	done
+	return 1
+}
+
+# uci get zone.network 仅返回列表第一项，必须用 network[i] 遍历
+_firewall_zone_has_iface() {
+	local z="$1" iface="$2" i=0 n
+	while n=$(uci -q get "${z}.network[$i]"); do
+		[ "$n" = "$iface" ] && return 0
+		i=$((i + 1))
+	done
+	return 1
+}
+
+_firewall_zone_del_iface() {
+	local z="$1" iface="$2" i=0 n
+	while n=$(uci -q get "${z}.network[$i]"); do
+		if [ "$n" = "$iface" ]; then
+			uci -q delete "${z}.network[$i]"
+			i=0
+			continue
+		fi
+		i=$((i + 1))
+	done
+}
+
+_firewall_add_vpn_to_wan() {
+	local z wan_z name
+	wan_z=$(_find_firewall_zone "$firewall_zone") || return 1
+	_firewall_zone_has_iface "$wan_z" "$vpname" && return 0
+	# 若曾在其它 zone，仅删除该接口项，保留 zone 内原有 network
+	for z in $(uci show firewall 2>/dev/null | grep '=zone$' | cut -d= -f1); do
+		[ "$z" = "$wan_z" ] && continue
+		_firewall_zone_has_iface "$z" "$vpname" || continue
+		_firewall_zone_del_iface "$z" "$vpname"
+	done
+	uci add_list "${wan_z}.network=$vpname"
+	uci commit firewall
+}
+
+_firewall_del_vpn() {
+	local z
+	for z in $(uci show firewall 2>/dev/null | grep '=zone$' | cut -d= -f1); do
+		_firewall_zone_has_iface "$z" "$vpname" || continue
+		_firewall_zone_del_iface "$z" "$vpname"
+	done
+	uci commit firewall 2>/dev/null
+}
+
+_del_wg_peers() {
+	local s
+	for s in $(uci show network 2>/dev/null | sed -n "s/^\(network\.[^=]*\)=wireguard_${vpname}\$/\1/p"); do
+		uci -q delete "$s" 2>/dev/null
+	done
+}
+
+_del_endpoint_route() {
+	local host
+	[ -f "$ENDPOINT_HOST_FILE" ] || return 0
+	host=$(cat "$ENDPOINT_HOST_FILE" 2>/dev/null)
+	[ -n "$host" ] && ip route del "$host" 2>/dev/null
+	rm -f "$ENDPOINT_HOST_FILE"
+}
+
+_stop_legacy_quagga() {
+	[ -x /etc/init.d/quagga ] && /etc/init.d/quagga stop >/dev/null 2>&1
+	rm -f /tmp/gogogo_quagga.stamp
+}
+
+_setup_rt_table() {
+	[ -f "$RT_TABLES_FILE" ] || mkdir -p /etc/iproute2
+	grep -qE "^${route_table_id}[[:space:]]+${route_table_name}([[:space:]]|$)" \
+		"$RT_TABLES_FILE" 2>/dev/null && return 0
+	grep -qE "^${route_table_id}[[:space:]]" "$RT_TABLES_FILE" 2>/dev/null && return 0
+	echo "${route_table_id}	${route_table_name}" >> "$RT_TABLES_FILE"
+}
+
+_cleanup_legacy_route_guard_rules() {
+	# 旧版 pref 50 的 per-host lookup main（会导致策略表前抢路由）
+	ip rule del pref 50 lookup main 2>/dev/null
+}
+
+_is_reserved_prefix() {
+	local p="$1" c
+	for c in $route_reserved_cidrs; do
+		[ "$p" = "$c" ] && return 0
+	done
+	return 1
+}
+
+_ensure_policy_reserved_rules() {
+	local cidr
+	_cleanup_legacy_route_guard_rules
+	for cidr in $route_reserved_cidrs; do
+		[ -n "$cidr" ] || continue
+		ip rule show pref "$route_reserved_pref" 2>/dev/null | grep -qF "to ${cidr} " && continue
+		ip rule add pref "$route_reserved_pref" to "$cidr" lookup main 2>/dev/null
+	done
+}
+
+_del_policy_reserved_rules() {
+	local cidr
+	for cidr in $route_reserved_cidrs; do
+		ip rule del pref "$route_reserved_pref" to "$cidr" lookup main 2>/dev/null
+	done
+}
+
+_ensure_policy_rule() {
+	_setup_rt_table
+	_ensure_policy_reserved_rules
+	# 删除误用的 iif-only 规则
+	while ip rule del pref "$route_rule_pref" iif "$lan_bridge" lookup "$route_table_id" 2>/dev/null; do :; done
+	ip rule show pref "$route_rule_pref" 2>/dev/null | grep -qE "from all.*lookup (${route_table_name}|${route_table_id})" && \
+		return 0
+	ip rule add pref "$route_rule_pref" lookup "$route_table_id" 2>/dev/null
+}
+
+_del_policy_rule() {
+	while ip rule del pref "$route_rule_pref" lookup "$route_table_id" 2>/dev/null; do :; done
+	while ip rule del pref "$route_rule_pref" iif "$lan_bridge" lookup "$route_table_id" 2>/dev/null; do :; done
+	_del_policy_reserved_rules
+}
+
+_clear_split_routes() {
+	ip route flush table "$route_table_id" 2>/dev/null
+	rm -f "$SPLIT_ROUTES_STAMP"
+}
+
+_route_guard_hosts_list() {
+	{
+		config_get route_guard_hosts | tr ' ' '\n'
+		[ -f "$ROUTE_GUARD_FILE" ] && grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' "$ROUTE_GUARD_FILE"
+	} | awk 'NF && !seen[$1]++ { print $1 }'
+}
+
+_route_guard_stamp_part() {
+	if [ -f "$ROUTE_GUARD_FILE" ]; then
+		md5sum "$ROUTE_GUARD_FILE" 2>/dev/null | awk '{print $1}'
+	else
+		config_get route_guard_hosts | md5sum 2>/dev/null | awk '{print $1}'
+	fi
+}
+
+# 管理 IP 写入策略表（metric 1 优先于 cpe_chnroutes），避免 ip rule 抢在策略表前导致 SSH 中断
+_apply_route_guard_in_table() {
+	local gw="$1" wan_dev="$2" ip
+	[ -n "$gw" ] || return 0
+	[ -n "$wan_dev" ] || return 0
+	for ip in $(_route_guard_hosts_list); do
+		ip=$(echo "$ip" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+		[ -n "$ip" ] || continue
+		ip route replace "${ip}/32" via "$gw" dev "$wan_dev" metric 1 table "$route_table_id" 2>/dev/null
+	done
+}
+
+_add_route_guard_host() {
+	local ip="$1" hosts h found=0
+	[ -n "$ip" ] || return 1
+	touch "$ROUTE_GUARD_FILE"
+	grep -qFx "$ip" "$ROUTE_GUARD_FILE" 2>/dev/null && return 0
+	echo "$ip" >> "$ROUTE_GUARD_FILE"
+	hosts=$(config_get route_guard_hosts)
+	for h in $hosts; do
+		[ "$h" = "$ip" ] && found=1 && break
+	done
+	if [ "$found" = 0 ]; then
+		[ -n "$hosts" ] && hosts="$hosts $ip" || hosts="$ip"
+		uci set "${CPE_UCI}.@default[0].route_guard_hosts=${hosts}"
+		uci commit "$CPE_UCI"
+	fi
+}
+
+_del_route_guard_host() {
+	local ip="$1" hosts new_hosts h
+	[ -n "$ip" ] || return 0
+	if [ -f "$ROUTE_GUARD_FILE" ]; then
+		grep -vFx "$ip" "$ROUTE_GUARD_FILE" > "${ROUTE_GUARD_FILE}.tmp" 2>/dev/null && \
+			mv "${ROUTE_GUARD_FILE}.tmp" "$ROUTE_GUARD_FILE"
+	fi
+	hosts=$(config_get route_guard_hosts)
+	new_hosts=""
+	for h in $hosts; do
+		[ "$h" = "$ip" ] && continue
+		new_hosts="$new_hosts $h"
+	done
+	uci set "${CPE_UCI}.@default[0].route_guard_hosts=${new_hosts# }"
+	uci commit "$CPE_UCI"
+}
+
+_add_endpoint_route() {
+	local host="$1" gw wan_dev NET_IF
+	[ -z "$host" ] && return 0
+	gw=$(_getwan)
+	[ -z "$gw" ] && return 1
+	network_find_wan NET_IF
+	network_get_device wan_dev "${NET_IF}"
+	[ -z "$wan_dev" ] && wan_dev="$NET_IF"
+	while ip route show "$host" 2>/dev/null | grep -q .; do
+		ip route del "$host" 2>/dev/null
+	done
+	ip route replace "$host" via "$gw" dev "$wan_dev" metric "$wan_route_metric" 2>/dev/null && \
+		echo "$host" > "$ENDPOINT_HOST_FILE"
+}
+
+_apply_split_routes_policy() {
+	local gw="$1" wan_dev="$2" batch="/tmp/gogogo-routes.batch" newstamp cnt prefix
+	[ -f "$chnroute_file" ] || return 1
+	[ -n "$gw" ] || return 1
+	[ -n "$wan_dev" ] || return 1
+
+	_stop_legacy_quagga
+	_ensure_policy_rule
+
+	newstamp=$(md5sum "$chnroute_file" 2>/dev/null | awk '{print $1}')
+	newstamp="${newstamp}_${gw}_${wan_dev}_$(_route_guard_stamp_part)"
+	if [ -f "$SPLIT_ROUTES_STAMP" ] && [ "$(cat "$SPLIT_ROUTES_STAMP" 2>/dev/null)" = "$newstamp" ]; then
+		cnt=$(ip route show table "$route_table_id" 2>/dev/null | grep -cE '^[0-9]' || echo 0)
+		[ "$cnt" -ge 100 ] && return 0
+	fi
+
+	ip route flush table "$route_table_id" 2>/dev/null
+	_apply_route_guard_in_table "$gw" "$wan_dev"
+	awk -v gw="$gw" -v dev="$wan_dev" -v metric="$route_chn_metric" -v tid="$route_table_id" \
+		-v reserved="$route_reserved_cidrs" \
+		'function is_reserved(p,    i, n, a) {
+			n = split(reserved, a, " ")
+			for (i = 1; i <= n; i++)
+				if (p == a[i]) return 1
+			return 0
+		}
+		/^[0-9]/ {
+			if (is_reserved($1)) next
+			printf "route replace %s via %s dev %s metric %s table %s\n", $1, gw, dev, metric, tid
+		}' "$chnroute_file" > "$batch"
+	ip -batch "$batch" 2>/dev/null || return 1
+	_apply_route_guard_in_table "$gw" "$wan_dev"
+	echo "$newstamp" > "$SPLIT_ROUTES_STAMP"
+}
+
+_refresh_split_routes() {
+	local NET_IF NET_GATEWAY NET_DEV
+	network_find_wan NET_IF
+	network_get_gateway NET_GATEWAY "${NET_IF}"
+	network_get_device NET_DEV "${NET_IF}"
+	[ -z "$NET_DEV" ] && NET_DEV="$NET_IF"
+	[ -n "$NET_GATEWAY" ] && _apply_split_routes_policy "$NET_GATEWAY" "$NET_DEV"
+}
+
+_del_vpn_routes() {
+	ip route del 0.0.0.0/1 dev "$vpname" 2>/dev/null
+	ip route del 128.0.0.0/1 dev "$vpname" 2>/dev/null
+}
+
+# 握手失效时撤销 VPN 数据面路由（保留接口与 endpoint 路由以便重连）
+_teardown_vpn_datapath() {
+	_del_vpn_routes
+	_clear_split_routes
+	_del_policy_rule
+}
+
+_add_vpn_routes() {
+	ip route show 0.0.0.0/1 2>/dev/null | grep -q "dev $vpname" || \
+		ip route add 0.0.0.0/1 dev "$vpname"
+	ip route show 128.0.0.0/1 2>/dev/null | grep -q "dev $vpname" || \
+		ip route add 128.0.0.0/1 dev "$vpname"
+}
+
+_deletevpn() {
+	public_key=""
+	server_ip=""
+
+	# 已拆除时不要每轮 restart dnsmasq
+	if ! ip link show "$vpname" >/dev/null 2>&1 && [ ! -f "$DNSMASQ_DROPIN" ]; then
+		_del_vpn_routes
+		_clear_split_routes
+		_del_policy_rule
+		_del_endpoint_route
+		return 0
+	fi
+
+	iptables -t nat -D PREROUTING -i "$lan_bridge" -p udp --dport 53 \
+		-j DNAT --to "$dns_hijack_to" -m comment --comment "DNS-Hijack" 2>/dev/null
+	iptables -t nat -D PREROUTING -i "$lan_bridge" -p tcp --dport 53 \
+		-j DNAT --to "$dns_hijack_to" -m comment --comment "DNS-Hijack" 2>/dev/null
+
+	rm -f "$DNSMASQ_DROPIN" "$DNSMASQ_DROPIN_LEGACY" "$DNSMASQ_APPLIED_STAMP" \
+		/tmp/gogogo_dns_mode /tmp/dnsmasq.gogogo.conf 2>/dev/null
+	_dnsmasq_cleanup_legacy
+	/etc/init.d/dnsmasq restart 2>/dev/null
+
+	_del_vpn_routes
+	_clear_split_routes
+	_del_policy_rule
+	_stop_legacy_quagga
+	_del_endpoint_route
+	_firewall_del_vpn
+	_del_wg_peers
+	uci -q del "network.${vpname}" 2>/dev/null
+	uci commit network 2>/dev/null
+	ip link del "$vpname" 2>/dev/null
+}
+
+_load_peer_pubkey() {
+	public_key=$(uci -q get "network.@wireguard_${vpname}[-1].public_key" 2>/dev/null)
+}
+
+_ensure_server_ip() {
+	[ -n "$server_ip" ] && return 0
+	[ -f "$ENDPOINT_HOST_FILE" ] && server_ip=$(cat "$ENDPOINT_HOST_FILE" 2>/dev/null)
+	[ -n "$server_ip" ] && return 0
+	server_ip=$(uci -q get "network.@wireguard_${vpname}[-1].endpoint_host" 2>/dev/null)
+}
+
+_vpn_handshake_ok() {
+	[ "$(_checkvpnstatus)" = "0" ]
+}
+
+_wait_vpn_handshake() {
+	local i=0 max="${1:-15}"
+	while [ "$i" -lt "$max" ]; do
+		_vpn_handshake_ok && return 0
+		sleep 1
+		i=$((i + 1))
+	done
+	return 1
+}
+
+_json_select_server() {
+	json_select server
+	json_get_var ip ip
+	json_get_var port port
+	json_get_var public_key public_key
+	json_get_var dns_server dns_server
+	if [ -z "$ip" ]; then
+		json_select 1
+		json_get_var ip ip
+		json_get_var port port
+		json_get_var public_key public_key
+		json_get_var dns_server dns_server
+	fi
+	if [ -n "$dns_server" ]; then
+		dns_remote_1="$dns_server"
+		uci set "${CPE_UCI}.@default[0].dns_server=${dns_server}"
+		uci commit "$CPE_UCI"
+	fi
+	[ -z "$port" ] && port="$wg_endpoint_port"
+	json_select ..
+	json_select ..
+}
+
+_connectvpn() {
+	. /usr/share/libubox/jshn.sh
+	json_load "$connect_info" || return 1
+
+	json_get_var code code
+	if [ "$code" != "200" ]; then
+		# 防 IP 泄露默认开启：API 异常时不拆除 VPN
+		echo "Error: API code $code"
+		return 1
+	fi
+
+	json_get_var private_key private_key
+	json_get_var private_ip private_ip
+	json_get_var login_status login_status
+
+	if [ "$login_status" != "0" ] && [ -n "$login_status" ]; then
+		uci set "${CPE_UCI}.@default[0].login_status=$login_status"
+		uci commit "$CPE_UCI"
+		_deletevpn
+		return 1
+	fi
+	uci set "${CPE_UCI}.@default[0].login_status=0"
+	uci commit "$CPE_UCI"
+
+	_json_select_server
+	server_ip="$ip"
+
+	[ -z "$ip" ] || [ -z "$public_key" ] && {
+		_deletevpn
+		return 1
+	}
+
+	uci set "network.${vpname}=interface"
+	uci set "network.${vpname}.proto=wireguard"
+
+	local_private_key=$(uci -q get "network.${vpname}.private_key")
+	[ "$local_private_key" != "$private_key" ] && {
+		_uci_set "network.${vpname}.private_key" "$private_key"
+		uci set "${CPE_UCI}.@default[0].update_info=1"
+	}
+
+	local_ip=$(uci -q get "network.${vpname}.addresses" 2>/dev/null | head -n1)
+	local_ip_expected="${private_ip}/32"
+	if [ -z "$local_ip" ]; then
+		uci add_list "network.${vpname}.addresses=${local_ip_expected}"
+		uci set "${CPE_UCI}.@default[0].update_info=1"
+	elif [ "$local_ip" != "$local_ip_expected" ]; then
+		uci -q delete "network.${vpname}.addresses" 2>/dev/null
+		uci add_list "network.${vpname}.addresses=${local_ip_expected}"
+		uci set "${CPE_UCI}.@default[0].update_info=1"
+	fi
+
+	uci set "network.${vpname}.defaultroute=0"
+	uci set "network.${vpname}.peerdns=0"
+	uci set "network.${vpname}.delegate=0"
+
+	_del_wg_peers
+	uci add network "wireguard_${vpname}"
+	_uci_set "network.@wireguard_${vpname}[-1].description" "gogogo-peer"
+	_uci_set "network.@wireguard_${vpname}[-1].public_key" "$public_key"
+	uci add_list "network.@wireguard_${vpname}[-1].allowed_ips=0.0.0.0/0"
+	_uci_set "network.@wireguard_${vpname}[-1].endpoint_host" "$ip"
+	_uci_set "network.@wireguard_${vpname}[-1].endpoint_port" "$port"
+	uci set "network.@wireguard_${vpname}[-1].persistent_keepalive=${wg_keepalive}"
+	uci commit network
+
+	_firewall_add_vpn_to_wan
+
+	if ! ip link show "$vpname" >/dev/null 2>&1; then
+		ifup "$vpname"
+	fi
+
+	vpn_update_info=$(config_get update_info)
+	if [ "$vpn_update_info" = "1" ]; then
+		ifup "$vpname"
+		uci set "${CPE_UCI}.@default[0].update_info=0"
+		uci commit "$CPE_UCI"
+	fi
+
+	_wait_vpn_handshake 15
+	_checkroute
+	_checkdns
+}
+
+# API/连接异常时：已有 VPN 则保留并维护路由/DNS，否则才拆除
+_preserve_or_delete_vpn() {
+	if ip link show "$vpname" >/dev/null 2>&1; then
+		_ensure_server_ip
+		_load_peer_pubkey
+		_checkroute
+		_checkdns
+		return 0
+	fi
+	_deletevpn
+	return 1
+}
+
+# API 瞬断保活：仅 server/WG 相关字段变化才触发重连
+_api_server_hash() {
+	echo "$1" | jq -c '{
+		private_key: (.private_key // ""),
+		private_ip: (.private_ip // ""),
+		ip: (.server.ip // .server[0].ip // ""),
+		port: (.server.port // .server[0].port // ""),
+		public_key: (.server.public_key // .server[0].public_key // ""),
+		dns: (.server.dns_server // .server[0].dns_server // "")
+	}' 2>/dev/null | md5sum | awk '{print $1}'
+}
+
+_check_config() {
+	public_key=""
+	enable=$(config_get enable)
+	username=$(config_get username)
+	password=$(config_get password)
+
+	if [ "$enable" != "1" ] || [ -z "$username" ] || [ -z "$password" ]; then
+		_deletevpn
+		return 0
+	fi
+
+	connect_info=$(_get_connect_info)
+	if ! echo "$connect_info" | jq . >/dev/null 2>&1; then
+		echo "Error: invalid API response (keep VPN if up)"
+		_preserve_or_delete_vpn
+		return 1
+	fi
+
+	# VPN 已通但 LuCI 仍显示旧「账号有误」时，主循环校验成功则刷新到期时间
+	_update_account_description "$connect_info" 0
+
+	_load_peer_pubkey
+	newhash=$(_api_server_hash "$connect_info")
+	[ -z "$newhash" ] && newhash=$(echo "$connect_info" | md5sum | awk '{print $1}')
+	oldhash=$(cat "$API_HASH_FILE" 2>/dev/null)
+	if [ "$newhash" = "$oldhash" ] && ip link show "$vpname" >/dev/null 2>&1; then
+		_ensure_server_ip
+		_load_peer_pubkey
+		_checkroute
+		_checkdns
+		return 0
+	fi
+
+	if _connectvpn; then
+		echo "$newhash" > "$API_HASH_FILE"
+	else
+		_preserve_or_delete_vpn
+		return 1
+	fi
+}
+
+_checkvpnstatus() {
+	local age now handshakes
+	_load_peer_pubkey
+	[ -z "$public_key" ] && echo 1 && return
+	ip link show "$vpname" >/dev/null 2>&1 || { echo 1; return; }
+
+	handshakes=$(wg show "$vpname" latest-handshakes 2>/dev/null | awk -v pk="$public_key" '$1==pk {print $2}')
+	[ -z "$handshakes" ] || [ "$handshakes" = "0" ] && { echo 1; return; }
+
+	now=$(date +%s)
+	age=$((now - handshakes))
+	[ "$age" -gt "$wg_hs_max_age" ] && echo 1 || echo 0
+}
+
+_checkroute() {
+	local vpnstatus NET_IF NET_GATEWAY NET_DEV
+
+	_ensure_server_ip
+	_load_peer_pubkey
+
+	network_find_wan NET_IF
+	network_get_gateway NET_GATEWAY "${NET_IF}"
+	network_get_device NET_DEV "${NET_IF}"
+	[ -z "$NET_DEV" ] && NET_DEV="$NET_IF"
+	[ -n "$server_ip" ] && _add_endpoint_route "$server_ip"
+
+	vpnstatus=$(_checkvpnstatus)
+	if [ "$vpnstatus" = "1" ]; then
+		# 握手未就绪/已过期：撤 VPN 路由与策略表（与 bootstrap DNS 一致），保留 endpoint
+		_teardown_vpn_datapath
+		return
+	fi
+
+	if _uci_flag tunnelall; then
+		_clear_split_routes
+		_stop_legacy_quagga
+	else
+		_apply_split_routes_policy "$NET_GATEWAY" "$NET_DEV"
+	fi
+
+	_add_vpn_routes
+}
+
+_dns_mode_tag() {
+	echo "${1:-0}:${2:-0}"
+}
+
+_write_dnsmasq_conf() {
+	local tunnelall="$1" dnsleak="$2" tmp="/tmp/dnsmasq.gogogo.conf"
+	# 全局 / 防 DNS 泄露：仅 API 海外 DNS（dns_remote_1）
+	if [ "$tunnelall" = "1" ] || [ "$dnsleak" = "1" ]; then
+		cat >"$tmp" <<EOF
+# gogogo-vpn: remote-only (api dns)
+no-resolv
+all-servers
+server=${dns_remote_1}
+EOF
+	else
+		if ! _dnsmasq_supports_split; then
+			logger -t gogogo "dnsmasq lacks chnroutes-file; install dnsmasq with chnroutes support for split DNS"
+		fi
+		cat >"$tmp" <<EOF
+# gogogo-vpn: split (国内 ${dns_local_1} / 海外 API ${dns_remote_1})
+no-resolv
+all-servers
+server=${dns_local_1},0
+server=${dns_remote_1},1
+chnroutes-file=${chnroute_file}
+EOF
+	fi
+	echo "$tmp"
+}
+
+_dnsmasq_cleanup_legacy() {
+	rm -f "$DNSMASQ_DROPIN_LEGACY" 2>/dev/null
+	[ -f /etc/dnsmasq.conf ] || return 0
+	grep -q 'conf-dir=/etc/dnsmasq.d' /etc/dnsmasq.conf 2>/dev/null || return 0
+	sed -i '/^conf-dir=\/etc\/dnsmasq\.d$/d' /etc/dnsmasq.conf 2>/dev/null
+}
+
+_dnsmasq_apply() {
+	# OpenWrt dnsmasq reload(SIGHUP) 不重读 conf-dir=/tmp/dnsmasq.d，须 restart
+	/etc/init.d/dnsmasq restart 2>/dev/null
+}
+
+_dnsmasq_supports_split() {
+	dnsmasq --help 2>&1 | grep -q chnroutes
+}
+
+_apply_dnsmasq() {
+	local tunnelall="$1" dnsleak="$2" tmpconf tmp_md5 dns_md5 last_mode mode_tag applied_md5
+	mkdir -p /tmp/dnsmasq.d
+	_dnsmasq_cleanup_legacy
+	tmpconf=$(_write_dnsmasq_conf "$tunnelall" "$dnsleak")
+	tmp_md5=$(md5sum "$tmpconf" | awk '{print $1}')
+	dns_md5=$(md5sum "$DNSMASQ_DROPIN" 2>/dev/null | awk '{print $1}')
+	applied_md5=$(cat "$DNSMASQ_APPLIED_STAMP" 2>/dev/null)
+	last_mode=$(cat /tmp/gogogo_dns_mode 2>/dev/null)
+	mode_tag=$(_dns_mode_tag "$tunnelall" "$dnsleak")
+	if [ "$tmp_md5" != "$dns_md5" ] || [ "$last_mode" != "$mode_tag" ] || [ "$tmp_md5" != "$applied_md5" ]; then
+		cp "$tmpconf" "$DNSMASQ_DROPIN"
+		echo "$mode_tag" > /tmp/gogogo_dns_mode
+		_dnsmasq_apply
+		echo "$tmp_md5" > "$DNSMASQ_APPLIED_STAMP"
+	fi
+}
+
+_apply_dnsmasq_bootstrap() {
+	local tmp="/tmp/dnsmasq.gogogo.bootstrap.conf" tmp_md5 dns_md5 applied_md5
+	mkdir -p /tmp/dnsmasq.d
+	_dnsmasq_cleanup_legacy
+	_probe_dns_local_1
+	cat >"$tmp" <<EOF
+# gogogo-vpn: bootstrap (wg handshake pending, no chnroutes split)
+no-resolv
+server=${dns_local_1}
+EOF
+	tmp_md5=$(md5sum "$tmp" 2>/dev/null | awk '{print $1}')
+	dns_md5=$(md5sum "$DNSMASQ_DROPIN" 2>/dev/null | awk '{print $1}')
+	applied_md5=$(cat "$DNSMASQ_APPLIED_STAMP" 2>/dev/null)
+	if [ "$tmp_md5" != "$dns_md5" ] || [ "$(cat /tmp/gogogo_dns_mode 2>/dev/null)" != "bootstrap:0:0" ] || \
+		[ "$tmp_md5" != "$applied_md5" ]; then
+		cp "$tmp" "$DNSMASQ_DROPIN"
+		echo "bootstrap:0:0" > /tmp/gogogo_dns_mode
+		_dnsmasq_apply
+		echo "$tmp_md5" > "$DNSMASQ_APPLIED_STAMP"
+	fi
+}
+
+_refresh_dnsmasq() {
+	local tunnelall=0 dnsleak=0
+	_probe_dns_local_1
+	_load_api_dns
+	_uci_flag tunnelall && tunnelall=1
+	_uci_flag dnsleak && dnsleak=1
+	_apply_dnsmasq "$tunnelall" "$dnsleak"
+}
+
+_checkdns() {
+	if ! _vpn_handshake_ok; then
+		_apply_dnsmasq_bootstrap
+	else
+		_refresh_dnsmasq
+	fi
+	_dnshijack
+}
+
+_dnshijack() {
+	command -v iptables >/dev/null 2>&1 || return 0
+	while iptables -t nat -D PREROUTING -i "$lan_bridge" -p udp --dport 53 \
+		-j DNAT --to "$dns_hijack_to" -m comment --comment "DNS-Hijack" 2>/dev/null; do :; done
+	while iptables -t nat -D PREROUTING -i "$lan_bridge" -p tcp --dport 53 \
+		-j DNAT --to "$dns_hijack_to" -m comment --comment "DNS-Hijack" 2>/dev/null; do :; done
+	iptables -t nat -A PREROUTING -i "$lan_bridge" -p udp --dport 53 \
+		-j DNAT --to "$dns_hijack_to" -m comment --comment "DNS-Hijack"
+	iptables -t nat -A PREROUTING -i "$lan_bridge" -p tcp --dport 53 \
+		-j DNAT --to "$dns_hijack_to" -m comment --comment "DNS-Hijack"
+}
+
+_getwan() {
+	local NET_IF NET_GATEWAY
+	network_find_wan NET_IF
+	network_get_gateway NET_GATEWAY "${NET_IF}"
+	echo "$NET_GATEWAY"
+}
+
+_format_expired_time() {
+	local ts="$1"
+	[ -n "$ts" ] || return 0
+	date -d "@$ts" "+%Y-%m-%d %H:%M:%S" 2>/dev/null ||
+		date -r "$ts" "+%Y-%m-%d %H:%M:%S" 2>/dev/null ||
+		echo "$ts"
+}
+
+# $2=1 时失败也写入提示（LuCI 保存）；=0 时仅成功刷新（主循环，避免 API 瞬断覆盖正确提示）
+_update_account_description() {
+	local connect_info="$1" force_err="${2:-0}"
+	local code login_status expired_time new_desc old_desc err_msg
+
+	err_msg="账号信息有误。请核对后重新填写。"
+
+	if ! echo "$connect_info" | jq -e . >/dev/null 2>&1; then
+		if [ "$force_err" = 1 ]; then
+			uci set "${CPE_UCI}.@default[0].description=连接信息获取失败."
+			uci commit "$CPE_UCI"
+		fi
+		return 1
+	fi
+
+	code=$(echo "$connect_info" | jq -r '.code // empty' 2>/dev/null)
+	login_status=$(echo "$connect_info" | jq -r '
+		if .login_status == null then "0"
+		else (.login_status | tostring) end' 2>/dev/null)
+	expired_time=$(echo "$connect_info" | jq -r '.expired_time // empty' 2>/dev/null)
+
+	if [ "$code" = "200" ] && { [ "$login_status" = "0" ] || [ -z "$login_status" ]; }; then
+		expired_time=$(_format_expired_time "$expired_time")
+		new_desc="到期时间：${expired_time}"
+		old_desc=$(config_get description)
+		[ "$old_desc" = "$new_desc" ] && return 0
+		uci set "${CPE_UCI}.@default[0].description=${new_desc}"
+		uci commit "$CPE_UCI"
+		return 0
+	fi
+
+	if [ "$force_err" = 1 ]; then
+		uci set "${CPE_UCI}.@default[0].description=${err_msg}"
+		uci commit "$CPE_UCI"
+	fi
+	return 1
+}
+
+_refresh_account_json() {
+	local status="$1" description="$2"
+	command -v jq >/dev/null 2>&1 || {
+		printf '{"status":"%s","description":"%s"}\n' "$status" "$description"
+		return 0
+	}
+	jq -n --arg status "$status" --arg description "$description" \
+		'{status: $status, description: $description}'
+}
+
+# 手动刷新账号/到期提示：flock 单实例 + 60s 内仅一次有效 API 请求
+_refresh_account() {
+	local now last desc rc
+	[ -x /usr/sbin/gogogo-cred ] && /usr/sbin/gogogo-cred sync 2>/dev/null
+	(
+		flock -n 9 || {
+			desc=$(config_get description)
+			_refresh_account_json "busy" "$desc"
+			exit 0
+		}
+		now=$(date +%s)
+		last=$(cat "$ACCOUNT_REFRESH_RATE_STAMP" 2>/dev/null)
+		if [ -n "$last" ] && [ "$((now - last))" -lt "$ACCOUNT_REFRESH_MIN_SEC" ]; then
+			desc=$(config_get description)
+			_refresh_account_json "rate_limited" "$desc"
+			exit 0
+		fi
+		echo "$now" > "$ACCOUNT_REFRESH_RATE_STAMP"
+		if _check_user_core; then
+			desc=$(config_get description)
+			_refresh_account_json "ok" "$desc"
+		else
+			rc=$?
+			desc=$(config_get description)
+			if [ "$rc" = 2 ]; then
+				_refresh_account_json "hint" "$desc"
+			else
+				_refresh_account_json "error" "$desc"
+			fi
+		fi
+	) 9>"$ACCOUNT_REFRESH_LOCK"
+}
+
+_check_user_core() {
+	local saved_timeout
+
+	_apply_uci_overrides
+	username=$(config_get username)
+	password=$(config_get password)
+	if [ -z "$username" ] && [ -z "$password" ]; then
+		uci set "${CPE_UCI}.@default[0].description=请填写账号和密码后使用。"
+		uci commit "$CPE_UCI"
+		return 2
+	fi
+	if [ -z "$username" ]; then
+		uci set "${CPE_UCI}.@default[0].description=请填写账号后使用。"
+		uci commit "$CPE_UCI"
+		return 2
+	fi
+	if [ -z "$password" ]; then
+		uci set "${CPE_UCI}.@default[0].description=请填写密码后使用。"
+		uci commit "$CPE_UCI"
+		return 2
+	fi
+	saved_timeout="$curl_timeout"
+	curl_timeout=10
+	connect_info=$(_get_connect_info)
+	curl_timeout="$saved_timeout"
+	_update_account_description "$connect_info" 1 && return 0
+	return 1
+}
+
+_check_user() {
+	_check_user_core || exit 1
+}
+
+# LuCI 诊断：输出 JSON，不暴露 API 地址；账号失败统一提示，不区分密码错误
+_account_diag_emit() {
+	command -v jq >/dev/null 2>&1 || {
+		printf '{"status":"api_error","message":"API服务器通讯异常"}\n'
+		return 0
+	}
+	jq -n --arg status "$1" --arg message "$2" \
+		'{status: $status, message: $message}'
+}
+
+_account_diag() {
+	local connect_info code login_status expired_time now msg et saved_timeout
+
+	[ -x /usr/sbin/gogogo-cred ] && /usr/sbin/gogogo-cred sync 2>/dev/null
+	_apply_uci_overrides
+	username=$(config_get username)
+	password=$(config_get password)
+
+	if [ -z "$username" ] && [ -z "$password" ]; then
+		_account_diag_emit hint "请填写账号和密码后使用。"
+		return 0
+	fi
+	if [ -z "$username" ]; then
+		_account_diag_emit hint "请填写账号后使用。"
+		return 0
+	fi
+	if [ -z "$password" ]; then
+		_account_diag_emit hint "请填写密码后使用。"
+		return 0
+	fi
+
+	if ! command -v jq >/dev/null 2>&1; then
+		_account_diag_emit api_error "API服务器通讯异常"
+		return 0
+	fi
+
+	saved_timeout="$curl_timeout"
+	if [ -n "$CPE_DIAG_CURL_TIMEOUT" ]; then
+		curl_timeout="$CPE_DIAG_CURL_TIMEOUT"
+	else
+		curl_timeout=10
+	fi
+	connect_info=$(_get_connect_info)
+	curl_timeout="$saved_timeout"
+	unset CPE_DIAG_CURL_TIMEOUT
+
+	if [ -z "$connect_info" ] || ! echo "$connect_info" | jq -e . >/dev/null 2>&1; then
+		_update_account_description "$connect_info" 1
+		_account_diag_emit api_error "API服务器通讯异常"
+		return 0
+	fi
+
+	code=$(echo "$connect_info" | jq -r '.code // empty' 2>/dev/null)
+	login_status=$(echo "$connect_info" | jq -r '
+		if .login_status == null then "0"
+		else (.login_status | tostring) end' 2>/dev/null)
+	expired_time=$(echo "$connect_info" | jq -r '.expired_time // empty' 2>/dev/null)
+	msg=$(echo "$connect_info" | jq -r '.message // .msg // .error // empty' 2>/dev/null)
+
+	if [ "$code" != "200" ]; then
+		_update_account_description "$connect_info" 1
+		case "$code" in
+			408|502|503|504|000|"")
+				_account_diag_emit api_error "API服务器通讯异常"
+				return 0
+				;;
+		esac
+		if [ -n "$login_status" ] && [ "$login_status" != "0" ]; then
+			case "$login_status" in
+				2 | 3) _account_diag_emit expired "账号已过期，请续费后重试" ;;
+				*)
+					if echo "$msg" | grep -qiE '过期|到期|expir'; then
+						_account_diag_emit expired "账号已过期，请续费后重试"
+					else
+						_account_diag_emit account_error "账号信息有误，请核对后重新填写"
+					fi
+					;;
+			esac
+			return 0
+		fi
+		if echo "$msg" | grep -qiE '过期|到期|expir'; then
+			_account_diag_emit expired "账号已过期，请续费后重试"
+			return 0
+		fi
+		if echo "$msg" | grep -qiE '账号|密码|account|auth|login|invalid|denied'; then
+			_account_diag_emit account_error "账号信息有误，请核对后重新填写"
+			return 0
+		fi
+		case "$code" in
+			5*|6*) _account_diag_emit api_error "API服务器通讯异常" ;;
+			*) _account_diag_emit account_error "账号信息有误，请核对后重新填写" ;;
+		esac
+		return 0
+	fi
+
+	if [ -n "$expired_time" ] && [ "$expired_time" -eq "$expired_time" ] 2>/dev/null; then
+		now=$(date +%s)
+		if [ "$expired_time" -lt "$now" ]; then
+			_update_account_description "$connect_info" 1
+			_account_diag_emit expired "账号已过期，请续费后重试"
+			return 0
+		fi
+	fi
+
+	if [ "$login_status" != "0" ] && [ -n "$login_status" ]; then
+		_update_account_description "$connect_info" 1
+		case "$login_status" in
+			2 | 3)
+				_account_diag_emit expired "账号已过期，请续费后重试"
+				;;
+			*)
+				if echo "$msg" | grep -qiE '过期|到期|expir'; then
+					_account_diag_emit expired "账号已过期，请续费后重试"
+				else
+					_account_diag_emit account_error "账号信息有误，请核对后重新填写"
+				fi
+				;;
+		esac
+		return 0
+	fi
+
+	_update_account_description "$connect_info" 1
+	et=$(_format_expired_time "$expired_time")
+	if [ -n "$et" ]; then
+		_account_diag_emit ok "账号有效，到期时间：${et}"
+	else
+		_account_diag_emit ok "账号鉴权通过"
+	fi
+}
+
+_update_chnroutes_once() {
+	[ -x /usr/sbin/gogogo-chnroutes-update ] && /usr/sbin/gogogo-chnroutes-update force
+}
+
+_status_dir() {
+	mkdir -p /var/run/gogogo
+}
+
+_json_escape() {
+	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g'
+}
+
+_write_status() {
+	_status_dir
+	_apply_uci_overrides
+	local enable username description login_status tunnelall dnsleak
+	local connected=0 handshake=0 rx=0 tx=0 endpoint="" private_ip="" iface=""
+	local want=0 split=1 killswitch=0 block_reason="" expired_text=""
+	local hs now node_name node_ep login_pending=0 login_result_json="null"
+
+	enable=$(config_get enable)
+	username=$(config_get username)
+	description=$(config_get description)
+	login_status=$(config_get login_status)
+	tunnelall=$(config_get tunnelall)
+	dnsleak=$(config_get dnsleak)
+	iface=$(config_get vpname)
+	[ -z "$iface" ] && iface="$vpname"
+	[ "$enable" = "1" ] && want=1
+	[ "$tunnelall" = "1" ] && split=0 || split=1
+	[ "$dnsleak" = "1" ] && killswitch=1
+	expired_text="$description"
+
+	if [ -n "$login_status" ] && [ "$login_status" != "0" ]; then
+		block_reason="系统检测到该账号已在客户端登录，请先退出客户端登录，再继续使用路由器服务。"
+	fi
+
+	if command -v wg >/dev/null 2>&1 && wg show "$iface" >/dev/null 2>&1; then
+		connected=1
+		private_ip=$(uci -q get "network.${iface}.addresses" | awk '{print $1}')
+		endpoint=$(wg show "$iface" endpoints 2>/dev/null | awk 'NF>=2 {print $2; exit}')
+		rx=$(wg show "$iface" transfer 2>/dev/null | awk 'NF>=3 {print $2; exit}')
+		tx=$(wg show "$iface" transfer 2>/dev/null | awk 'NF>=3 {print $3; exit}')
+		hs=$(wg show "$iface" latest-handshakes 2>/dev/null | awk 'NF>=2 {print $2; exit}')
+		now=$(date +%s)
+		if [ -n "$hs" ] && [ "$hs" != "0" ] && [ $((now - hs)) -lt "${wg_hs_max_age:-180}" ]; then
+			handshake=1
+		fi
+	fi
+	[ -z "$rx" ] && rx=0
+	[ -z "$tx" ] && tx=0
+
+	if [ -f /var/run/gogogo/login.job ]; then
+		login_pending=1
+	fi
+	if [ -f /var/run/gogogo/login.result ]; then
+		login_result_json=$(cat /var/run/gogogo/login.result)
+		[ -z "$login_result_json" ] && login_result_json="null"
+	fi
+
+	node_name="平台分配节点"
+	node_ep="$endpoint"
+	if [ -z "$node_ep" ]; then
+		node_ep=$(uci -q get "network.@wireguard_${iface}[-1].endpoint_host")
+		[ -n "$node_ep" ] && node_ep="$node_ep:$(uci -q get "network.@wireguard_${iface}[-1].endpoint_port")"
+	fi
+
+	cat > /var/run/gogogo/status.json <<EOF
+{"ok":true,"enable":$want,"want":$want,"connected":$connected,"handshake":$handshake,"split":$split,"killswitch":$killswitch,"account":"$(_json_escape "$username")","login_account":"$(_json_escape "$username")","description":"$(_json_escape "$description")","expired_text":"$(_json_escape "$expired_text")","login_status":$([ -n "$login_status" ] && echo "$login_status" || echo 0),"block_reason":"$(_json_escape "$block_reason")","iface":"$(_json_escape "$iface")","endpoint":"$(_json_escape "$endpoint")","private_ip":"$(_json_escape "$private_ip")","rx":${rx:-0},"tx":${tx:-0},"region":"assigned","live_region":"$([ "$connected" = 1 ] && echo assigned || echo)","exit_ip":"","nodes":[{"region":"assigned","name":"$(_json_escape "$node_name")","endpoint":"$(_json_escape "$node_ep")"}],"login_pending":$login_pending,"login_result":$login_result_json}
+EOF
+	cat /var/run/gogogo/status.json
+}
+
+_login_job() {
+	_status_dir
+	date +%s > /var/run/gogogo/login.job
+	rm -f /var/run/gogogo/login.result
+	if _check_user_core; then
+		printf '{"ok":true,"msg":"登录成功","account":"%s"}\n' "$(_json_escape "$(config_get username)")" > /var/run/gogogo/login.result
+		_write_status >/dev/null
+	else
+		printf '{"ok":false,"msg":"%s","account":"%s"}\n' "$(_json_escape "$(config_get description)")" "$(_json_escape "$(config_get username)")" > /var/run/gogogo/login.result
+		_write_status >/dev/null
+	fi
+	rm -f /var/run/gogogo/login.job
+}
+
+_connect_now() {
+	uci set "${CPE_UCI}.@default[0].enable=1"
+	uci commit "$CPE_UCI"
+	_apply_uci_overrides
+	_check_config
+	_write_status >/dev/null
+}
+
+_disconnect_now() {
+	uci set "${CPE_UCI}.@default[0].enable=0"
+	uci commit "$CPE_UCI"
+	_deletevpn
+	_write_status >/dev/null
+}
+
+_start() {
+	if ! command -v jq >/dev/null 2>&1; then
+		echo "Error: jq required for gogogo" >&2
+		logger -t gogogo "jq missing, cannot start"
+		exit 1
+	fi
+	if ! _gogogo_main_acquire_lock; then
+		echo "Process ${CPE_SERVICE:-gogogo} already running (pid $(_gogogo_read_pidfile "$CPE_MAIN_PIDFILE" 2>/dev/null || _gogogo_pick_main_pid))."
+		exit 0
+	fi
+	_apply_uci_overrides
+	trap '_gogogo_main_release_lock' INT TERM EXIT
+	# 启动即写入 /tmp/dnsmasq.d/gogogo-vpn.conf 并 restart dnsmasq（不等到主循环/API）
+	_checkdns
+	while true; do
+		_apply_uci_overrides
+		_check_config
+		sleep "$main_loop_sec"
+	done
+}
+
+_load_defaults
+_apply_uci_overrides
+
+action="${1:-start}"
+case "$action" in
+	stop)
+		_gogogo_main_stop_all
+		_deletevpn
+		rm -f "$API_HASH_FILE" "$CHNROUTES_FETCH_STAMP"
+		;;
+	getwan)
+		_getwan
+		;;
+	check_user)
+		_check_user
+		;;
+	account_diag)
+		_account_diag
+		;;
+	refresh_account)
+		_refresh_account
+		;;
+	refresh_dns)
+		_apply_uci_overrides
+		rm -f /tmp/gogogo_dns_probe.stamp /tmp/gogogo_dns_local_selected "$DNSMASQ_APPLIED_STAMP"
+		_refresh_dnsmasq
+		;;
+	probe_dns)
+		_apply_uci_overrides
+		rm -f /tmp/gogogo_dns_probe.stamp /tmp/gogogo_dns_local_selected
+		_probe_dns_local_1
+		echo "dns_local_1=${dns_local_1}"
+		;;
+	refresh_routes)
+		_apply_uci_overrides
+		_ensure_policy_reserved_rules
+		if _uci_flag tunnelall; then
+			_clear_split_routes
+			_stop_legacy_quagga
+		else
+			_refresh_split_routes
+		fi
+		_add_vpn_routes 2>/dev/null
+		_checkdns
+		;;
+	refresh_chnroutes)
+		_apply_uci_overrides
+		rm -f "$CHNROUTES_FETCH_STAMP"
+		[ -x /usr/sbin/gogogo-chnroutes-update ] && /usr/sbin/gogogo-chnroutes-update force
+		_uci_flag tunnelall || _refresh_split_routes
+		_refresh_dnsmasq
+		;;
+	route_guard_add)
+		_apply_uci_overrides
+		_add_route_guard_host "$2"
+		_refresh_split_routes
+		;;
+	route_guard_del)
+		_apply_uci_overrides
+		_del_route_guard_host "$2"
+		_refresh_split_routes
+		;;
+	status)
+		_write_status
+		;;
+	login)
+		_login_job
+		;;
+	connect)
+		_connect_now
+		;;
+	disconnect)
+		_disconnect_now
+		;;
+	save)
+		_write_status
+		;;
+	pin_reserved)
+		_ensure_policy_reserved_rules
+		;;
+	*)
+		_start
+		;;
+esac

@@ -1,0 +1,40 @@
+#!/bin/sh
+# 校时入口：HTTP Date 优先，不依赖 sysntpd 常驻
+
+[ -f /usr/share/gogogo/defaults.sh ] && . /usr/share/gogogo/defaults.sh
+[ -f /usr/share/gogogo/timesync.sh ] && . /usr/share/gogogo/timesync.sh
+
+TIMESYNC_LOCK="${CPE_TIMESYNC_LOCK:-/tmp/gogogo_timesync.lock}"
+
+_run() {
+	case "${1:-}" in
+		force) cpe_timesync force ;;
+		""|sync) cpe_timesync ;;
+		*)
+			echo "Usage: $0 [sync|force|status]" >&2
+			exit 2
+			;;
+	esac
+}
+
+case "${1:-}" in
+	status)
+		echo "year=$(date +%Y 2>/dev/null)"
+		echo "need_sync=$(_need_sync && echo 1 || echo 0)"
+		echo "stamp=$([ -f "$CPE_TIMESYNC_STAMP" ] && echo ok || echo missing)"
+		;;
+	force|""|sync)
+		_mode="${1:-sync}"
+		flock -n "$TIMESYNC_LOCK" sh -c '
+			. /usr/share/gogogo/timesync.sh 2>/dev/null
+			case "$1" in
+				force) cpe_timesync force ;;
+				*) cpe_timesync ;;
+			esac
+		' sh "$_mode" || exit 0
+		;;
+	*)
+		echo "Usage: $0 [sync|force|status]" >&2
+		exit 2
+		;;
+esac

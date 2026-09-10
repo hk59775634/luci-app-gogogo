@@ -1,0 +1,26 @@
+{
+	"admin/gogogo": {
+		"title": "VPN",
+		"order": 60,
+		"action": {
+			"type": "firstchild"
+		}
+	},
+	"admin/gogogo/config": {
+		"title": "跨境加速",
+		"order": 1,
+		"action": {
+			"type": "call",
+			"module": "luci.controller.gogogo",
+			"function": "action_index"
+		}
+	},
+	"admin/gogogo/diagnostics": {
+		"title": "连接诊断",
+		"order": 2,
+		"action": {
+			"type": "template",
+			"path": "gogogo/diagnostics"
+		}
+	}
+}

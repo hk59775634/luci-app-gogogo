@@ -1,0 +1,27 @@
+#!/bin/sh /etc/rc.common
+START=60
+STOP=15
+
+[ -f /usr/share/gogogo/defaults.sh ] && . /usr/share/gogogo/defaults.sh
+[ -f /usr/share/gogogo/procmgr.sh ] && . /usr/share/gogogo/procmgr.sh
+
+start() {
+	mkdir -p /var/run/gogogo /tmp/dnsmasq.d
+	[ -x /usr/sbin/gogogod ] || return 1
+	_gogogo_cped_alive && return 0
+	/usr/sbin/gogogod start >/dev/null 2>&1 &
+}
+
+stop() {
+	[ -x /usr/sbin/gogogo-kill ] && /usr/sbin/gogogo-kill
+}
+
+reload() {
+	[ -x /usr/sbin/gogogo-kill ] && /usr/sbin/gogogo-kill
+	start
+}
+
+restart() {
+	stop
+	start
+}

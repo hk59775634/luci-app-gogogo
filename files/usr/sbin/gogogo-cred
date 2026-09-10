@@ -1,0 +1,197 @@
+#!/bin/sh
+# 账号密码与 base_url：UCI 与 U-Boot 双向同步（不写 /etc/cpe.env）
+# UCI 未填账号密码时，url / cpe_user / cpe_pass 均从 fw_printenv 写入 UCI
+# 缺失或损坏的 /etc/config/gogogo 可自动修复（overlay 字符设备 / stale handle）
+
+[ -f /usr/share/gogogo/defaults.sh ] && . /usr/share/gogogo/defaults.sh
+
+CPE_UCI="${CPE_UCI:-gogogo}"
+UBOOT_USER_VAR="${CPE_UBOOT_USER_VAR:-cpe_user}"
+UBOOT_PASS_VAR="${CPE_UBOOT_PASS_VAR:-cpe_pass}"
+UBOOT_URL_VAR="${CPE_UBOOT_URL_VAR:-url}"
+
+_trim() {
+	echo "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+_uci_config_path() {
+	echo "/etc/config/${CPE_UCI}"
+}
+
+_uci_get() {
+	_trim "$(uci -q get "${CPE_UCI}.@default[0].$1" 2>/dev/null)"
+}
+
+_uci_readable() {
+	uci -q get "${CPE_UCI}.@default[0].vpname" >/dev/null 2>&1
+}
+
+# 配置文件缺失、非普通文件或 uci 无法读取
+_uci_config_broken() {
+	local p
+	p=$(_uci_config_path)
+	if _uci_readable; then
+		[ -f "$p" ] && return 1
+	fi
+	if [ -e "$p" ] && [ ! -f "$p" ]; then
+		return 0
+	fi
+	if [ ! -e "$p" ]; then
+		return 0
+	fi
+	return 0
+}
+
+_fw_get() {
+	local v
+	command -v fw_printenv >/dev/null 2>&1 || return 1
+	v=$(_trim "$(fw_printenv -n "$1" 2>/dev/null)")
+	[ -n "$v" ] && echo "$v"
+}
+
+_fw_set_if_changed() {
+	local var="$1" new="$2" old
+	[ -n "$new" ] || return 0
+	command -v fw_setenv >/dev/null 2>&1 || return 0
+	old=$(_fw_get "$var")
+	[ "$old" = "$new" ] && return 0
+	fw_setenv "$var" "$new" >/dev/null 2>&1
+}
+
+_persist_uboot() {
+	local user="$1" pass="$2" url="$3"
+	_fw_set_if_changed "$UBOOT_USER_VAR" "$user"
+	_fw_set_if_changed "$UBOOT_PASS_VAR" "$pass"
+	[ -n "$url" ] && _fw_set_if_changed "$UBOOT_URL_VAR" "$url"
+}
+
+_uci_set_cred() {
+	local changed=0
+	[ "$(_uci_get username)" != "$1" ] && uci -q set "${CPE_UCI}.@default[0].username=$1" && changed=1
+	[ "$(_uci_get password)" != "$2" ] && uci -q set "${CPE_UCI}.@default[0].password=$2" && changed=1
+	[ "$changed" = 1 ] && uci commit "$CPE_UCI"
+}
+
+_uci_set_base_url() {
+	local url="$1"
+	[ -n "$url" ] || return 0
+	[ "$(_uci_get base_url)" = "$url" ] && return 0
+	uci -q set "${CPE_UCI}.@default[0].base_url=$url"
+	uci commit "$CPE_UCI"
+}
+
+_uci_has_credentials() {
+	[ -n "$(_uci_get username)" ] && [ -n "$(_uci_get password)" ]
+}
+
+# 清除损坏的 overlay 项，从 /rom 恢复或写入最小 default 段
+_repair_uci_config() {
+	local p upper work rom base_url
+
+	if _uci_readable && [ -f "$(_uci_config_path)" ]; then
+		return 0
+	fi
+
+	p=$(_uci_config_path)
+	upper="/overlay/upper${p}"
+	work="/overlay/work${p}"
+	rom="/rom${p}"
+
+	logger -t gogogo-cred "repairing ${p}"
+
+	rm -f "$upper" "$work" 2>/dev/null
+	mkdir -p "$(dirname "$p")" 2>/dev/null
+
+	if [ -f "$rom" ]; then
+		cp "$rom" "$p" 2>/dev/null || cp "$rom" "$upper" 2>/dev/null
+	fi
+
+	if _uci_readable; then
+		return 0
+	fi
+
+	base_url="${CPE_DEFAULT_URL_FALLBACK:-https://cpe.gogogofuture.com}"
+	[ -x /usr/sbin/gogogo-url ] && base_url=$(_trim "$(/usr/sbin/gogogo-url get 2>/dev/null)") || true
+	[ -z "$base_url" ] && base_url=$(_fw_get "$UBOOT_URL_VAR")
+	[ -z "$base_url" ] && base_url="https://cpe.gogogofuture.com"
+
+	if ! uci -q show "$CPE_UCI" >/dev/null 2>&1; then
+		touch "$p" 2>/dev/null || touch "$upper" 2>/dev/null
+	fi
+
+	uci -q set "${CPE_UCI}.@default[0]=default" 2>/dev/null || \
+		uci set "${CPE_UCI}.@default[0]=default"
+	uci set "${CPE_UCI}.@default[0].enable=${CPE_DEFAULT_ENABLE:-1}"
+	uci set "${CPE_UCI}.@default[0].vpname=${VPNAME:-GOGOGO}"
+	uci set "${CPE_UCI}.@default[0].base_url=${base_url}"
+	uci commit "$CPE_UCI"
+
+	if _uci_readable; then
+		logger -t gogogo-cred "repaired ${p}"
+		return 0
+	fi
+
+	logger -t gogogo-cred "repair failed for ${p} (reboot may be required)"
+	return 1
+}
+
+_sync() {
+	local uci_u uci_p boot_u boot_p boot_url url default_url
+
+	_repair_uci_config || true
+
+	uci_u=$(_uci_get username)
+	uci_p=$(_uci_get password)
+
+	if [ -n "$uci_u" ] && [ -n "$uci_p" ]; then
+		url=$(_uci_get base_url)
+		boot_url=$(_fw_get "$UBOOT_URL_VAR")
+		# UCI 已有合法 URL 时以 UCI 为准，并回写 U-Boot；仅 UCI 为空时用 U-Boot 回填
+		if [ -z "$url" ] && [ -n "$boot_url" ]; then
+			_uci_set_base_url "$boot_url"
+			url="$boot_url"
+		fi
+		[ -z "$url" ] && [ -x /usr/sbin/gogogo-url ] && url=$(_trim "$(/usr/sbin/gogogo-url get 2>/dev/null)")
+		_persist_uboot "$uci_u" "$uci_p" "$url"
+		return 0
+	fi
+
+	# UCI 未填账号密码：从 U-Boot 拉取 url + 账号密码到 UCI
+	boot_u=$(_fw_get "$UBOOT_USER_VAR")
+	boot_p=$(_fw_get "$UBOOT_PASS_VAR")
+	boot_url=$(_fw_get "$UBOOT_URL_VAR")
+	if [ -n "$boot_u" ] && [ -n "$boot_p" ]; then
+		_uci_set_cred "$boot_u" "$boot_p"
+		if [ -n "$boot_url" ]; then
+			_uci_set_base_url "$boot_url"
+		fi
+	fi
+
+	return 0
+}
+
+case "${1:-sync}" in
+	sync)
+		(
+			flock -n 9 || exit 0
+			_sync
+		) 9>/tmp/gogogo_cred.lock
+		;;
+	repair)
+		(
+			flock -n 9 || exit 0
+			_repair_uci_config
+		) 9>/tmp/gogogo_cred.lock
+		;;
+	has)
+		(
+			flock -n 9 || exit 0
+			_sync
+			_uci_has_credentials
+		) 9>/tmp/gogogo_cred.lock
+		;;
+	*)
+		echo "Usage: $0 sync|repair|has" >&2
+		exit 1
+		;;
+esac

@@ -1,0 +1,406 @@
+<%#
+ LuCI 连接诊断：手动开始、进度条、网络项重试
+-%>
+<%+header%>
+
+<h2 name="content">连接诊断</h2>
+
+<style type="text/css">
+.cpe-diag-faults {
+	margin: 0.6em 0 1em;
+	padding: 0.6em 0.8em;
+	background: #fff5f5;
+	border-left: 4px solid #c00;
+	line-height: 1.6;
+}
+.cpe-diag-faults strong { color: #c00; font-weight: bold; }
+.cpe-diag-healthy {
+	color: #080;
+	font-weight: bold;
+	font-size: 1.05em;
+	margin: 0.4em 0 0.8em;
+}
+.cpe-diag-bar-wrap {
+	width: 100%;
+	max-width: 32em;
+	height: 1.1em;
+	background: #e8e8e8;
+	border-radius: 3px;
+	overflow: hidden;
+	margin: 0.5em 0 0.3em;
+}
+.cpe-diag-bar {
+	height: 100%;
+	background: linear-gradient(90deg, #06c, #3af);
+	width: 0%;
+	transition: width 0.35s ease;
+}
+.cpe-diag-pct {
+	color: #333;
+	font-size: 0.95em;
+	margin-bottom: 0.6em;
+}
+.cpe-diag-steps {
+	margin: 0;
+	padding-left: 1.2em;
+	line-height: 1.75em;
+	list-style: none;
+}
+.cpe-diag-steps li { position: relative; padding-left: 1.4em; margin-bottom: 0.15em; }
+.cpe-diag-steps .ico {
+	position: absolute;
+	left: 0;
+	width: 1.2em;
+	text-align: center;
+}
+.cpe-diag-running { color: #06c; }
+.cpe-diag-ok { color: #080; }
+.cpe-diag-fail { color: #c00; }
+.cpe-diag-warn { color: #c60; }
+.cpe-diag-skip { color: #888; }
+.cpe-diag-detail { color: #666; font-size: 0.92em; }
+.cpe-diag-hint { color: #666; margin: 0.5em 0; }
+.cpe-diag-btn[disabled] { opacity: 0.55; cursor: not-allowed; }
+.cpe-diag-actions { margin: 0.8em 0; }
+.cpe-diag-actions .cbi-button { margin-right: 0.5em; }
+.cpe-diag-copy-tip { color: #080; font-size: 0.92em; margin-left: 0.3em; }
+.cpe-diag-copy-tip.err { color: #c00; }
+</style>
+
+<script type="text/javascript">//<![CDATA[
+	var cpeDiagPollTimer = null;
+	var cpeDiagRunning = false;
+	var cpeDiagActive = false;
+	var cpeDiagSeenRunning = false;
+	var cpeDiagLastData = null;
+	var cpeDiagCopyTipTimer = null;
+
+	function cpeDiagEsc(s) {
+		if (!s) return '';
+		return String(s)
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;');
+	}
+
+	/* 步骤说明缩略：隐藏路径、重试序号等冗长信息 */
+	function cpeDiagShortDetail(s) {
+		if (!s) return '';
+		s = String(s)
+			.replace(/\/etc\/config\/cpe/g, 'VPN 配置')
+			.replace(/\/etc\/cpe_chnroutes/g, '国内路由表')
+			.replace(/\/etc\/[^\s,，;；）)]+/g, '')
+			.replace(/（第 \d+\/\d+ 次）/g, '')
+			.replace(/\s+/g, ' ')
+			.trim();
+		if (s.length > 42)
+			s = s.slice(0, 39) + '…';
+		return s;
+	}
+
+	function cpeDiagStatusIcon(status) {
+		switch (status) {
+			case 'ok': return '<span class="ico cpe-diag-ok">✓</span>';
+			case 'fail': return '<span class="ico cpe-diag-fail">✗</span>';
+			case 'warn': return '<span class="ico cpe-diag-warn">!</span>';
+			case 'skip': return '<span class="ico cpe-diag-skip">−</span>';
+			case 'running': return '<span class="ico cpe-diag-running">…</span>';
+			default: return '<span class="ico">•</span>';
+		}
+	}
+
+	function cpeDiagPct(data) {
+		if (data && data.progress_pct !== undefined && data.progress_pct !== null)
+			return Math.min(100, Math.max(0, parseInt(data.progress_pct, 10) || 0));
+		return 0;
+	}
+
+	function cpeDiagProgressBar(pct, label) {
+		var html = '<div class="cpe-diag-bar-wrap"><div class="cpe-diag-bar" style="width:' + pct + '%;"></div></div>';
+		html += '<p class="cpe-diag-pct">诊断进度：' + pct + '%';
+		if (label) html += ' — ' + cpeDiagEsc(label);
+		html += '</p>';
+		return html;
+	}
+
+	function cpeDiagSetButton(running) {
+		var btn = document.getElementById('cpe_diag_btn');
+		if (!btn) return;
+		cpeDiagRunning = running;
+		btn.disabled = running;
+		btn.value = running ? '诊断进行中…' : '开始诊断';
+	}
+
+	function cpeDiagStatusLabel(status) {
+		switch (status) {
+			case 'ok': return '通过';
+			case 'fail': return '失败';
+			case 'warn': return '警告';
+			case 'skip': return '跳过';
+			case 'running': return '进行中';
+			default: return status || '未知';
+		}
+	}
+
+	function cpeDiagSetCopyButton(enabled) {
+		var btn = document.getElementById('cpe_diag_copy_btn');
+		if (btn) btn.disabled = !enabled;
+	}
+
+	function cpeDiagCopyTip(msg, isErr) {
+		var tip = document.getElementById('cpe_diag_copy_tip');
+		if (!tip) return;
+		tip.textContent = msg || '';
+		tip.className = 'cpe-diag-copy-tip' + (isErr ? ' err' : '');
+		if (cpeDiagCopyTipTimer) window.clearTimeout(cpeDiagCopyTipTimer);
+		if (msg) cpeDiagCopyTipTimer = window.setTimeout(function() { tip.textContent = ''; }, 3500);
+	}
+
+	function cpeDiagFormatReport(data) {
+		if (!data || data.state !== 'done' || !(data.steps && data.steps.length))
+			return '';
+
+		var lines = [];
+		var now = new Date();
+		var ts = now.getFullYear() + '-' +
+			('0' + (now.getMonth() + 1)).slice(-2) + '-' +
+			('0' + now.getDate()).slice(-2) + ' ' +
+			('0' + now.getHours()).slice(-2) + ':' +
+			('0' + now.getMinutes()).slice(-2) + ':' +
+			('0' + now.getSeconds()).slice(-2);
+
+		lines.push('======== 跨境加速连接诊断报告 ========');
+		lines.push('复制时间：' + ts);
+		if (data.zt_node_id) lines.push('设备 ID：' + data.zt_node_id);
+		if (data.device_sn) lines.push('出厂 SN：' + data.device_sn);
+		lines.push('诊断状态：已完成');
+		if (data.vpn_healthy)
+			lines.push('VPN 状态：正常');
+		else
+			lines.push('VPN 状态：异常或未启用');
+
+		var faults = data.faults || [];
+		if (faults.length > 0) {
+			lines.push('');
+			lines.push('【故障摘要】');
+			for (var f = 0; f < faults.length; f++)
+				lines.push((f + 1) + '. ' + faults[f]);
+		}
+
+		lines.push('');
+		lines.push('【检测明细】');
+		var steps = data.steps;
+		for (var i = 0; i < steps.length; i++) {
+			var st = steps[i];
+			var detail = (st.detail && String(st.detail).trim()) ? (' — ' + st.detail) : '';
+			lines.push('[' + cpeDiagStatusLabel(st.status) + '] ' + st.title + detail);
+		}
+
+		lines.push('');
+		lines.push('========================================');
+		lines.push('请将本报告完整发送给客服协助处理。');
+		return lines.join('\n');
+	}
+
+	function cpeDiagCopyFallback(text) {
+		var ta = document.createElement('textarea');
+		ta.value = text;
+		ta.setAttribute('readonly', '');
+		ta.style.position = 'fixed';
+		ta.style.left = '-9999px';
+		document.body.appendChild(ta);
+		ta.select();
+		var ok = false;
+		try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+		document.body.removeChild(ta);
+		return ok;
+	}
+
+	function cpeDiagCopy() {
+		var text = cpeDiagFormatReport(cpeDiagLastData);
+		if (!text) {
+			cpeDiagCopyTip('请先完成诊断后再复制', true);
+			return;
+		}
+		var onOk = function() { cpeDiagCopyTip('已复制到剪贴板，可粘贴发送给客服'); };
+		var onFail = function() {
+			if (cpeDiagCopyFallback(text)) onOk();
+			else cpeDiagCopyTip('复制失败，请手动选择下方文本复制', true);
+		};
+		if (navigator.clipboard && navigator.clipboard.writeText) {
+			navigator.clipboard.writeText(text).then(onOk).catch(onFail);
+		} else if (cpeDiagCopyFallback(text)) {
+			onOk();
+		} else {
+			onFail();
+		}
+	}
+
+	function cpeDiagRender(data) {
+		var box = document.getElementById('cpe_diagnostics');
+		if (!box || !data) return;
+		cpeDiagLastData = data;
+
+		var html = '<fieldset class="cbi-section">';
+		var faults = data.faults || [];
+		var steps = data.steps || [];
+		var state = data.state || 'idle';
+		var pct = cpeDiagPct(data);
+		var curLabel = '';
+
+		if (state === 'idle') {
+			html += '<p class="cpe-diag-hint">请点击下方「开始诊断」按钮运行检测。</p>';
+		} else if (state === 'running') {
+			if (data.current && data.current.title) {
+				curLabel = data.current.title;
+				if (data.current.detail) {
+					var sd = cpeDiagShortDetail(data.current.detail);
+					if (sd) curLabel += '（' + sd + '）';
+				}
+			}
+			else
+				curLabel = '正在检测…';
+			html += cpeDiagProgressBar(pct, curLabel);
+		} else if (state === 'done') {
+			html += cpeDiagProgressBar(100, '诊断完成');
+		}
+
+		if (data.vpn_healthy) {
+			html += '<p class="cpe-diag-healthy">VPN 服务正常（VPN service healthy）</p>';
+		} else if (state === 'done' && faults.length === 0 && steps.length > 0) {
+			for (var i = 0; i < steps.length; i++) {
+				if (steps[i].id === 'vpn_enable' && steps[i].status === 'skip') {
+					html += '<p class="cpe-diag-hint"><b>VPN 未启用</b>（开机启动已关闭）</p>';
+					break;
+				}
+			}
+		}
+
+		if (faults.length > 0) {
+			html += '<div class="cpe-diag-faults"><strong>故障原因分析：</strong><ul style="margin:0.3em 0 0;padding-left:1.2em;">';
+			for (var f = 0; f < faults.length; f++) {
+				html += '<li><strong>' + cpeDiagEsc(faults[f]) + '</strong></li>';
+			}
+			html += '</ul></div>';
+		}
+
+		if (steps.length > 0) {
+			html += '<ul class="cpe-diag-steps">';
+			for (var j = 0; j < steps.length; j++) {
+				var st = steps[j];
+				var cls = 'cpe-diag-' + (st.status || '');
+				html += '<li class="' + cls + '">' +
+					cpeDiagStatusIcon(st.status) +
+					'<b>' + cpeDiagEsc(st.title) + '</b>' +
+					' <span class="cpe-diag-detail">' + cpeDiagEsc(cpeDiagShortDetail(st.detail)) + '</span></li>';
+			}
+			html += '</ul>';
+		}
+
+		html += '</fieldset>';
+		box.innerHTML = html;
+		cpeDiagSetCopyButton(state === 'done' && steps.length > 0);
+	}
+
+	function cpeDiagShowStarting() {
+		document.getElementById('cpe_diagnostics').innerHTML =
+			'<fieldset class="cbi-section">' +
+			cpeDiagProgressBar(0, '正在启动…') +
+			'</fieldset>';
+	}
+
+	function cpeDiagSchedulePoll(delay) {
+		if (!cpeDiagActive) return;
+		if (cpeDiagPollTimer) window.clearTimeout(cpeDiagPollTimer);
+		cpeDiagPollTimer = window.setTimeout(cpeDiagPollOnce, delay || 500);
+	}
+
+	function cpeDiagPollOnce() {
+		if (!cpeDiagActive) return;
+		new XHR().get('<%=url([[admin]], [[gogogo]], [[diag_poll]])%>', null,
+			function(x, data) {
+				if (!cpeDiagActive) return;
+				if (!data) {
+					cpeDiagSchedulePoll(500);
+					return;
+				}
+				if (data.state === 'running') {
+					cpeDiagSeenRunning = true;
+					cpeDiagRender(data);
+					cpeDiagSchedulePoll(600);
+				} else if (data.state === 'done' && cpeDiagSeenRunning) {
+					cpeDiagRender(data);
+					cpeDiagActive = false;
+					cpeDiagSeenRunning = false;
+					cpeDiagPollTimer = null;
+					cpeDiagSetButton(false);
+				} else {
+					/* 上一轮残留的 idle/done，或 start 尚未写入：继续等 */
+					cpeDiagShowStarting();
+					cpeDiagSchedulePoll(400);
+				}
+			}
+		);
+	}
+
+	function cpeDiagStart() {
+		if (cpeDiagRunning) return;
+		if (cpeDiagPollTimer) {
+			window.clearTimeout(cpeDiagPollTimer);
+			cpeDiagPollTimer = null;
+		}
+		cpeDiagActive = true;
+		cpeDiagSeenRunning = false;
+		cpeDiagSetButton(true);
+		cpeDiagSetCopyButton(false);
+		cpeDiagCopyTip('');
+		cpeDiagShowStarting();
+
+		new XHR().get('<%=url([[admin]], [[gogogo]], [[diag_start]])%>', null,
+			function(x, data) {
+				if (!cpeDiagActive) return;
+				if (data) {
+					if (data.state === 'running')
+						cpeDiagSeenRunning = true;
+					cpeDiagRender(data);
+				}
+				cpeDiagSchedulePoll(300);
+			}
+		);
+	}
+
+	function cpeDiagShowIdle() {
+		cpeDiagRender({
+			state: 'idle',
+			vpn_healthy: false,
+			progress: 0,
+			progress_total: 27,
+			progress_pct: 0,
+			faults: [],
+			steps: []
+		});
+	}
+
+	document.addEventListener('DOMContentLoaded', function() {
+		cpeDiagShowIdle();
+		cpeDiagSetButton(false);
+		cpeDiagSetCopyButton(false);
+	});
+//]]></script>
+
+<div id="cpe_diagnostics">
+	<fieldset class="cbi-section">
+		<p class="cpe-diag-hint">请点击下方「开始诊断」按钮运行检测。</p>
+	</fieldset>
+</div>
+
+<p class="cpe-diag-actions">
+	<input type="button" id="cpe_diag_btn" class="cbi-button cbi-button-apply cpe-diag-btn"
+		value="开始诊断" onclick="cpeDiagStart();" />
+	<input type="button" id="cpe_diag_copy_btn" class="cbi-button cpe-diag-btn"
+		value="复制诊断结果" onclick="cpeDiagCopy();" disabled="disabled" />
+	<span id="cpe_diag_copy_tip" class="cpe-diag-copy-tip"></span>
+</p>
+
+<%+footer%>

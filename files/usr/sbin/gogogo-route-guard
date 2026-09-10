@@ -1,0 +1,69 @@
+#!/bin/sh
+# SSH/管理主机保护：写入 UCI/文件，由 cpe 在策略表内添加 /32（可选）
+# 私网/保留段已由 ROUTE_RESERVED_CIDRS 走 main；本工具仅用于额外 /32 保护
+# 用法: cpe-route-guard on [admin_ip]
+#       cpe-route-guard off [admin_ip]
+
+GUARD_STAMP="/tmp/gogogo_route_guard.stamp"
+
+_admin_ip() {
+	local ip="${1:-}"
+	[ -n "$ip" ] && echo "$ip" && return 0
+	if [ -n "$SSH_CLIENT" ]; then
+		echo "$SSH_CLIENT" | awk '{print $1}'
+		return 0
+	fi
+	return 1
+}
+
+_on() {
+	local admin_ip="$1"
+	admin_ip=$(_admin_ip "$admin_ip") || {
+		echo "gogogo-route-guard: need admin IP (arg or SSH_CLIENT)" >&2
+		return 1
+	}
+	[ -x /usr/sbin/gogogo ] || {
+		echo "gogogo-route-guard: /usr/sbin/gogogo not found" >&2
+		return 1
+	}
+	/usr/sbin/gogogo route_guard_add "$admin_ip" || return 1
+	echo "$admin_ip" >> "$GUARD_STAMP" 2>/dev/null
+	sort -u "$GUARD_STAMP" -o "$GUARD_STAMP" 2>/dev/null
+	echo "gogogo-route-guard: ON ${admin_ip}/32 in policy table (via cpe)"
+	ip route show table 100 2>/dev/null | grep "$admin_ip" || \
+		ip route show table gogogo_cn 2>/dev/null | grep "$admin_ip" || true
+}
+
+_off() {
+	local admin_ip="$1"
+	admin_ip=$(_admin_ip "$admin_ip")
+	if [ -n "$admin_ip" ]; then
+		[ -x /usr/sbin/gogogo ] && /usr/sbin/gogogo route_guard_del "$admin_ip"
+		[ -f "$GUARD_STAMP" ] && sed -i "/^${admin_ip}$/d" "$GUARD_STAMP" 2>/dev/null
+		echo "gogogo-route-guard: removed ${admin_ip}"
+	else
+		[ -f "$GUARD_STAMP" ] && while read -r admin_ip; do
+			[ -n "$admin_ip" ] && /usr/sbin/gogogo route_guard_del "$admin_ip" 2>/dev/null
+		done < "$GUARD_STAMP"
+		rm -f "$GUARD_STAMP"
+		echo "gogogo-route-guard: OFF (all)"
+	fi
+}
+
+case "${1:-}" in
+	on) _on "${2:-}" ;;
+	off) _off "${2:-}" ;;
+	status)
+		echo "=== guard hosts (UCI/file) ==="
+		uci -q get cpe.@default[0].route_guard_hosts 2>/dev/null
+		[ -f /etc/gogogo_route_guard_hosts ] && cat /etc/gogogo_route_guard_hosts
+		echo "=== in policy table ==="
+		ip route show table 100 2>/dev/null | grep '/32' | head -20
+		echo "=== ip rule (should only have cpe_cn @ pref 1000) ==="
+		ip rule show | grep -E 'pref|lookup'
+		;;
+	*)
+		echo "Usage: $0 on [admin_ip] | off [admin_ip] | status" >&2
+		exit 2
+		;;
+esac

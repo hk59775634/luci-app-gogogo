@@ -1,0 +1,11 @@
+
+config default
+	option enable '0'
+	option vpname 'GOGOGO'
+	option base_url 'https://cpe.gogogofuture.com'
+	option username ''
+	option password ''
+	option tunnelall '0'
+	option dnsleak '0'
+	option description ''
+	option login_status '0'

@@ -1,0 +1,120 @@
+#!/bin/sh
+# Watchdog: keep a single gogogo main loop, refresh chnroutes, timesync, resolv.
+
+[ -f /usr/share/gogogo/defaults.sh ] && . /usr/share/gogogo/defaults.sh
+[ -f /usr/share/gogogo/procmgr.sh ] && . /usr/share/gogogo/procmgr.sh
+
+CPE_SERVICE="${CPE_SERVICE:-gogogo}"
+CPE_DAEMON="${CPE_DAEMON:-gogogod}"
+WATCHDOG_LOOP_SEC="${WATCHDOG_LOOP_SEC:-10}"
+CHNROUTES_RUN_LOCK="/tmp/gogogo_chnroutes.run.lock"
+UPDATE_RUN_LOCK="/tmp/gogogo_update.run.lock"
+
+_gogogod_has_cred() {
+	[ -x /usr/sbin/gogogo-cred ] && /usr/sbin/gogogo-cred has
+}
+
+_run_bg() {
+	local lock="$1"
+	shift
+	(
+		flock -n 9 || exit 0
+		"$@"
+	) 9>"$lock" &
+}
+
+_ensure_main() {
+	_gogogod_has_cred || return 0
+	_gogogo_main_ensure_running
+}
+
+_start() {
+	local chnroutes_accum=0
+	local chnroutes_interval="${CPE_CHNROUTES_REFRESH_SEC:-86400}"
+	local timesync_accum=0
+	local timesync_retry="${CPE_TIMESYNC_RETRY_SEC:-300}"
+	local resolv_accum=0
+	local resolv_retry="${CPE_RESOLV_RETRY_SEC:-300}"
+	local cred_accum=0
+	local cred_interval="${CPE_CRED_SYNC_SEC:-60}"
+	local update_accum=0
+	local update_interval="${CPE_UPDATE_CHECK_SEC:-3600}"
+
+	if ! _gogogo_cped_acquire_lock; then
+		echo "Daemon ${CPE_DAEMON} already running (pid $(_gogogo_read_pidfile "$CPED_PIDFILE" 2>/dev/null || _gogogo_cped_pids | head -1))."
+		exit 0
+	fi
+	trap '_gogogo_cped_release_lock' INT TERM EXIT
+
+	_ensure_main
+
+	[ -x /etc/init.d/quagga ] && /etc/init.d/quagga stop >/dev/null 2>&1
+
+	while true; do
+		local has_cred=0
+		_gogogod_has_cred && has_cred=1
+
+		[ "$has_cred" = "1" ] && _gogogo_main_ensure_running
+
+		if [ -f "${CPE_TIMESYNC_STAMP:-/tmp/gogogo.timesync.ok}" ]; then
+			timesync_accum=0
+			rm -f /tmp/gogogo.timesync.sched 2>/dev/null
+		else
+			timesync_accum=$((timesync_accum + WATCHDOG_LOOP_SEC))
+			if [ ! -f /tmp/gogogo.timesync.sched ] || [ "$timesync_accum" -ge "$timesync_retry" ]; then
+				timesync_accum=0
+				touch /tmp/gogogo.timesync.sched
+				[ -x /usr/sbin/gogogo-timesync ] && /usr/sbin/gogogo-timesync >/dev/null 2>&1 &
+			fi
+		fi
+
+		if [ -f "${CPE_RESOLV_OK_STAMP:-/tmp/gogogo.resolv.ok}" ]; then
+			resolv_accum=0
+			rm -f /tmp/gogogo.resolv.sched 2>/dev/null
+		else
+			resolv_accum=$((resolv_accum + WATCHDOG_LOOP_SEC))
+			if [ ! -f /tmp/gogogo.resolv.sched ] || [ "$resolv_accum" -ge "$resolv_retry" ]; then
+				resolv_accum=0
+				touch /tmp/gogogo.resolv.sched
+				[ -x /usr/sbin/gogogo-resolv-guard ] && /usr/sbin/gogogo-resolv-guard check >/dev/null 2>&1 &
+			fi
+		fi
+
+		if [ -x /usr/sbin/gogogo-chnroutes-update ]; then
+			chnroutes_accum=$((chnroutes_accum + WATCHDOG_LOOP_SEC))
+			if [ "$chnroutes_accum" -ge "$chnroutes_interval" ]; then
+				chnroutes_accum=0
+				rm -f /tmp/gogogo_chnroutes_fetch.stamp /tmp/gogogo_chnroutes_fetch.fail
+				_run_bg "$CHNROUTES_RUN_LOCK" /usr/sbin/gogogo-chnroutes-update fetch
+			fi
+		fi
+
+		cred_accum=$((cred_accum + WATCHDOG_LOOP_SEC))
+		if [ "$cred_accum" -ge "$cred_interval" ] && [ -x /usr/sbin/gogogo-cred ]; then
+			cred_accum=0
+			/usr/sbin/gogogo-cred sync
+		fi
+
+		if [ "${CPE_AUTO_UPDATE:-0}" = "1" ] && [ -x /usr/sbin/gogogo-update ]; then
+			update_accum=$((update_accum + WATCHDOG_LOOP_SEC))
+			if [ "$update_accum" -ge "$update_interval" ]; then
+				update_accum=0
+				_run_bg "$UPDATE_RUN_LOCK" /usr/sbin/gogogo-update check
+			fi
+		fi
+		sleep "$WATCHDOG_LOOP_SEC"
+	done
+}
+
+case "${1:-start}" in
+	stop)
+		_gogogo_cped_stop_all
+		;;
+	status)
+		_gogogo_main_alive && echo "gogogo_main=running" || echo "gogogo_main=stopped"
+		_gogogo_cped_alive && echo "gogogod=running" || echo "gogogod=stopped"
+		;;
+	*)
+		_start
+		;;
+esac

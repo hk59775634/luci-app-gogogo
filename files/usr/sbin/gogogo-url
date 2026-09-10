@@ -1,0 +1,84 @@
+#!/bin/sh
+# 云端 URL：未填 UCI 账号密码时与账号一同取自 fw_printenv；已填账号密码时优先 UCI base_url
+
+CPE_UCI="${CPE_UCI:-gogogo}"
+UBOOT_VAR="${CPE_UBOOT_URL_VAR:-url}"
+
+[ -f /usr/share/gogogo/defaults.sh ] && . /usr/share/gogogo/defaults.sh
+
+_normalize_url() {
+	echo "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s|/*$||'
+}
+
+_validate_url() {
+	case "$1" in
+		http://*|https://*)
+			echo "$1" | grep -qE '^https?://[A-Za-z0-9._:-]+' && return 0
+			;;
+	esac
+	return 1
+}
+
+_uci_has_credentials() {
+	local u p
+	u=$(uci -q get "${CPE_UCI}.@default[0].username" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+	p=$(uci -q get "${CPE_UCI}.@default[0].password" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+	[ -n "$u" ] && [ -n "$p" ]
+}
+
+_fw_url() {
+	local v
+	command -v fw_printenv >/dev/null 2>&1 || return 1
+	v=$(_normalize_url "$(fw_printenv -n "$UBOOT_VAR" 2>/dev/null)")
+	[ -n "$v" ] && _validate_url "$v" && echo "$v"
+}
+
+_get_url() {
+	local v
+
+	# 未在 LuCI 填写账号密码：base_url 与账号同源，走 U-Boot（忽略打包默认 base_url）
+	if ! _uci_has_credentials; then
+		v=$(_fw_url)
+		[ -n "$v" ] && echo "$v" && return 0
+		v=$(_normalize_url "${CPE_DEFAULT_URL_FALLBACK:-https://cpe.gogogofuture.com}")
+		[ -n "$v" ] && echo "$v" && return 0
+		echo "https://cpe.gogogofuture.com"
+		return 0
+	fi
+
+	# 已填账号密码：优先 UCI，再 U-Boot，最后编译默认
+	v=$(uci -q get "${CPE_UCI}.@default[0].base_url" 2>/dev/null)
+	v=$(_normalize_url "$v")
+	[ -n "$v" ] && _validate_url "$v" && echo "$v" && return 0
+	v=$(_fw_url)
+	[ -n "$v" ] && echo "$v" && return 0
+	v=$(_normalize_url "${CPE_DEFAULT_URL_FALLBACK:-https://cpe.gogogofuture.com}")
+	[ -n "$v" ] && echo "$v" && return 0
+	echo "https://cpe.gogogofuture.com"
+}
+
+_set_url() {
+	local url
+	url=$(_normalize_url "$1")
+	_validate_url "$url" || {
+		echo "Invalid URL: $1" >&2
+		return 1
+	}
+	if command -v fw_setenv >/dev/null 2>&1; then
+		fw_setenv "$UBOOT_VAR" "$url" || return 1
+	fi
+	uci -q set "${CPE_UCI}.@default[0].base_url=$url"
+	uci commit "$CPE_UCI"
+	rm -f /tmp/gogogo_api_hash
+	echo "$url"
+	return 0
+}
+
+case "${1:-get}" in
+	get)  _get_url ;;
+	set)  _set_url "$2" ;;
+	*)
+		echo "Usage: $0 get|set <url>" >&2
+		exit 1
+		;;
+esac
