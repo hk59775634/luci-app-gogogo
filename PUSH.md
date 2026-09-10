@@ -26,17 +26,19 @@ cd package/custom_packages/luci-app-gogogo
 ./scripts/publish-release.sh --ipk /path/to/luci-app-gogogo_<版本>-1_all.ipk --push
 ```
 
-仓库：`https://github.com/hk59775634/luci-app-gogogo`（以 `env` 中 `CPE_GITHUB_REPO` 为准）。
+仓库：`https://github.com/hk59775634/luci-app-gogogo`（**公开仓库**，以 `env` 中 `CPE_GITHUB_REPO` 为准）。
 
-设备自动更新三路径（见 `gogogo-update`）：
+设备自动更新（见 `gogogo-update`）并行探测下列源，取版本号最新者；同版本优先走国内加速下 ipk：
 
-| 路径 | manifest |
+| 源 | manifest |
 |------|----------|
 | **base_url** | `{gogogo-url get}` + `CPE_UPDATE_MANIFEST` |
-| **GitHub 原始** | `raw.githubusercontent.com/{CPE_GITHUB_REPO}/{CPE_GITHUB_MANIFEST_PATH}` |
-| **gh-proxy 加速** | `{CPE_GITHUB_MIRROR}/{CPE_GITHUB_REPO}/blob/{CPE_GITHUB_MANIFEST_PATH}` |
+| **GitHub Release** | `github.com/{repo}/releases/latest/download/version.json` |
+| **GitHub raw** | `raw.githubusercontent.com/{repo}/{CPE_GITHUB_MANIFEST_PATH}` |
+| **jsDelivr** | `cdn.jsdelivr.net/gh/{repo}@{CPE_GITHUB_MANIFEST_PATH}` |
+| **加速前缀** | `CPE_GITHUB_MIRROR_PREFIXES` 逐条加上面 GitHub URL（ghproxy.net / gh-proxy.com / ghfast.top / kkgithub 等，对齐 nsclient / nros-update） |
 
-ipk 走 `releases/download/v{版本}/`。加速域名由 `gogogo_curl` 强制 DoH。
+ipk 优先用命中 manifest 的同目录 URL，再回退 `releases/download/v{版本}/` 全线路。加速域名由 `gogogo_curl` 强制 DoH。
 
 ## env 多品牌
 

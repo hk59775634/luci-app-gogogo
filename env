@@ -4,7 +4,7 @@
 # --- 软件包元数据 ---
 # 版本号规则见 VERSION.md（前 8 位日期 YYYYMMDD + 后 2 位当日序号 00–99，次日归零）
 CPE_PKG_NAME=luci-app-gogogo
-CPE_PKG_VERSION=2026091004
+CPE_PKG_VERSION=2026091005
 CPE_PKG_TITLE:=供创未来跨境加速客户端
 CPE_PKG_DESCRIPTION:=Login to the GOGOGOFUTURE CPE platform, connect the assigned WireGuard tunnel, and switch split / global / DNS-leak modes.
 
@@ -36,7 +36,7 @@ CPE_DOH_ALI_IP2=223.6.6.6
 CPE_DOH_TENCENT_HOST=doh.pub
 CPE_DOH_TENCENT_IP=119.29.29.29
 CPE_DOH_TENCENT_IP2=119.28.28.28
-CPE_DOH_FORCE_HOSTS=gh-proxy.com,ghfast.top,ghproxy.net,mirror.ghproxy.com
+CPE_DOH_FORCE_HOSTS=gh-proxy.com,ghfast.top,ghproxy.net,mirror.ghproxy.com,ghps.cc,gh.llkk.cc,hub.gitmirror.com,gh.ddlc.top,gh.noki.icu,gh.sixyin.com,kkgithub.com
 
 # --- 路由分流 ---
 CPE_CHNROUTE_FILE=/etc/gogogo_chnroutes
@@ -65,6 +65,7 @@ CPE_LUCI_MENU_ORDER=60
 CPE_AUTO_UPDATE=1
 CPE_GITHUB_REPO=hk59775634/luci-app-gogogo
 CPE_GITHUB_MIRROR=https://gh-proxy.com/https://github.com
+CPE_GITHUB_MIRROR_PREFIXES=https://ghproxy.net/,https://gh-proxy.com/,https://mirror.ghproxy.com/,https://ghps.cc/,https://ghfast.top/,https://gh.llkk.cc/,https://hub.gitmirror.com/,https://gh.ddlc.top/,https://gh.noki.icu/,https://gh.sixyin.com/
 CPE_GITHUB_MANIFEST_PATH=main/release/version.json
 CPE_GITHUB_RELEASE_MANIFEST=version.json
 CPE_UPDATE_MANIFEST=/software/gogogo/version.json

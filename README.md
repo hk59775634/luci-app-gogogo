@@ -4,6 +4,8 @@
 
 数据面逻辑对齐 [luci-app-CPE](https://github.com/hk59775634/luci-app-CPE)：策略路由、handshake 健康检查、API 失败保活、dnsmasq drop-in、chnroutes、U-Boot 凭据、自动更新。不含 ZeroTier 维护网。
 
+自动更新仓库为公开 GitHub：[hk59775634/luci-app-gogogo](https://github.com/hk59775634/luci-app-gogogo)。`gogogo-update` 并行探测 GitHub Release / raw / jsDelivr 以及 nsclient 同款国内加速前缀，失败忽略。
+
 ## 打包
 
 编辑根目录 `env` 后，在 OpenWrt SDK 中：

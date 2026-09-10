@@ -1,6 +1,6 @@
 #!/bin/sh
-# 方案 B：manifest + ipk + sha256，无感升级（kill 进程，不 gogogo stop）
-# 三路径并行拉 manifest，失败忽略，取成功结果中版本号最新者
+# 多线路拉 manifest + ipk：对齐 luci-app-nsclient / nros-update 的 GitHub 加速列表
+# 并行探测，失败忽略，取版本号最新者；同版本优先国内加速下 ipk
 
 [ -f /usr/share/gogogo/defaults.sh ] && . /usr/share/gogogo/defaults.sh
 [ -f /usr/share/gogogo/curl-resolve.sh ] && . /usr/share/gogogo/curl-resolve.sh
@@ -8,13 +8,34 @@
 CPE_PKG_NAME="${CPE_PKG_NAME:-luci-app-gogogo}"
 CPE_SERVICE="${CPE_SERVICE:-gogogo}"
 UPDATE_MANIFEST="${CPE_UPDATE_MANIFEST:-/software/gogogo/version.json}"
-GITHUB_MANIFEST_PATH="${CPE_GITHUB_MANIFEST_PATH:-${CPE_GITHUB_RAW_MANIFEST:-main/release/version.json}}"
+GITHUB_MANIFEST_PATH="${CPE_GITHUB_MANIFEST_PATH:-main/release/version.json}"
 UPDATE_LOCK="/tmp/gogogo_update.lock"
 UPDATE_IPK="/tmp/gogogo_update.ipk"
-CURL_TIMEOUT="${CURL_TIMEOUT:-10}"
+CURL_TIMEOUT="${CURL_TIMEOUT:-8}"
+# 与 luci-theme-gogogo nros-update-lines / nsclient chnroutes 同一组前缀
+DEFAULT_MIRROR_PREFIXES="https://ghproxy.net/,https://gh-proxy.com/,https://mirror.ghproxy.com/,https://ghps.cc/,https://ghfast.top/,https://gh.llkk.cc/,https://hub.gitmirror.com/,https://gh.ddlc.top/,https://gh.noki.icu/,https://gh.sixyin.com/"
 
 _log() {
 	echo "gogogo-update: $*" >&2
+}
+
+_github_repo() {
+	echo "${CPE_GITHUB_REPO:-hk59775634/luci-app-gogogo}" | sed 's|^/||;s|/*$||'
+}
+
+_legacy_mirror_prefix() {
+	local m="${CPE_GITHUB_MIRROR:-}"
+	[ -n "$m" ] || return 0
+	echo "$m" | sed 's|/https://github.com.*||;s|/*$|/|'
+}
+
+_mirror_prefixes() {
+	local p
+	p="${CPE_GITHUB_MIRROR_PREFIXES:-$DEFAULT_MIRROR_PREFIXES}"
+	{
+		echo "$p" | tr ',' '\n'
+		_legacy_mirror_prefix
+	} | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s|/*$|/|' | awk 'NF && !seen[$0]++'
 }
 
 _abs_url() {
@@ -26,50 +47,18 @@ _abs_url() {
 	esac
 }
 
-_github_repo() {
-	echo "${CPE_GITHUB_REPO:-}" | sed 's|^/||;s|/*$||'
-}
-
-_github_mirror_prefix() {
-	local mirror repo
-	mirror=$(echo "${CPE_GITHUB_MIRROR:-}" | sed 's|/*$||')
-	repo=$(_github_repo)
-	[ -n "$mirror" ] && [ -n "$repo" ] || return 1
-	echo "${mirror}/${repo}"
-}
-
-_github_raw_prefix() {
-	local repo
-	repo=$(_github_repo)
-	[ -n "$repo" ] || return 1
-	echo "https://raw.githubusercontent.com/${repo}"
-}
-
-_github_release_prefix() {
-	local repo
-	repo=$(_github_repo)
-	[ -n "$repo" ] || return 1
-	echo "https://github.com/${repo}"
-}
-
-# Release 附件 manifest（main/blob 缓存滞后时；从高序号向下探测，命中即停）
-_probe_release_manifests() {
-	local prefix="$1" src_kind="$2" day tag manifest i
-
-	[ -n "$prefix" ] || return 0
-	for day in $(date +%Y%m%d) $(date -d "@$(($(date +%s) - 86400))" +%Y%m%d 2>/dev/null); do
-		[ -n "$day" ] || continue
-		i=99
-		while [ "$i" -ge 0 ]; do
-			tag=$(printf "v%s%02d" "$day" "$i")
-			manifest=$(_fetch_manifest "$prefix" "releases/download/${tag}/version.json")
-			if _candidate_add "${src_kind}:${prefix}" "$manifest"; then
-				return 0
-			fi
-			i=$((i - 1))
-		done
-	done
-	return 1
+_wrap_github() {
+	local url="$1" prefix="$2"
+	[ -n "$url" ] || return 1
+	case "$prefix" in
+		""|direct) echo "$url" ;;
+		kkgithub)
+			echo "$url" | sed 's|https://github.com/|https://kkgithub.com/|'
+			;;
+		*)
+			echo "${prefix}${url}"
+			;;
+	esac
 }
 
 _release_tag() {
@@ -86,10 +75,11 @@ _installed_version() {
 	echo "$v" | sed 's/-.*//'
 }
 
-# 版本相同时优先用国内加速下 ipk（mirror > github > base）
 _source_rank() {
 	case "$1" in
-		mirror:*) echo 3 ;;
+		proxy:*) echo 5 ;;
+		jsdelivr:*) echo 4 ;;
+		kkgithub:*) echo 3 ;;
 		github:*) echo 2 ;;
 		base:*) echo 1 ;;
 		*) echo 0 ;;
@@ -108,86 +98,108 @@ _version_gt() {
 	[ "$new" -gt "$old" ] 2>/dev/null
 }
 
-_fetch_manifest() {
-	local base="$1" manifest_path="$2" url
-	url=$(_abs_url "$base" "$manifest_path")
+_fetch_body() {
+	local url="$1"
+	[ -n "$url" ] || return 1
 	gogogo_curl "$url" --connect-timeout "$CURL_TIMEOUT" --max-time "$((CURL_TIMEOUT * 3))" \
-		-fsSL 2>/dev/null
+		--http1.1 -fsSL 2>/dev/null
 }
 
 _manifest_valid() {
-	local m="$1"
-	echo "$m" | jq -e '.version and .url and .sha256' >/dev/null 2>&1
+	echo "$1" | jq -e '.version and .url and .sha256' >/dev/null 2>&1
 }
 
 _manifest_version() {
 	echo "$1" | jq -r '.version // empty' 2>/dev/null
 }
 
-# 记录候选：source_tag + manifest（写入临时文件，避免多行 JSON 破坏解析）
-CANDIDATES="/tmp/gogogo_update_candidates.$$"
-_candidate_add() {
-	local src="$1" manifest="$2" ver compact
+CAND_DIR=""
+_cand_init() {
+	CAND_DIR="/tmp/gogogo_update_cand.$$"
+	rm -rf "$CAND_DIR"
+	mkdir -p "$CAND_DIR"
+}
 
-	_manifest_valid "$manifest" || return 1
-	compact=$(echo "$manifest" | jq -c . 2>/dev/null) || return 1
+_cand_add_file() {
+	local src="$1" url="$2" body="$3" id="$4" compact ver
+	_manifest_valid "$body" || return 1
+	compact=$(echo "$body" | jq -c . 2>/dev/null) || return 1
 	ver=$(_manifest_version "$compact")
 	[ -n "$ver" ] || return 1
-	printf '%s\n' "$src" >>"$CANDIDATES"
-	printf '%s\n' "$compact" >>"$CANDIDATES"
+	printf '%s\n%s\n%s\n' "$src" "$compact" "$url" >"$CAND_DIR/$id"
 	_log "manifest ok ($src) version=$ver"
 	return 0
 }
 
-# 1) base_url  2) GitHub 原始 raw  3) gh-proxy 加速 blob
-_collect_manifest_candidates() {
-	local base repo raw_prefix mirror_prefix m raw_ok=0 blob_ok=0
+_try_manifest() {
+	local src="$1" url="$2" id="$3" body
+	body=$(_fetch_body "$url") || return 1
+	_cand_add_file "$src" "$url" "$body" "$id"
+}
 
-	rm -f "$CANDIDATES"
+_origin_manifest_urls() {
+	local repo path
+	repo=$(_github_repo)
+	path="${GITHUB_MANIFEST_PATH#/}"
+	printf '%s\n' \
+		"https://github.com/${repo}/releases/latest/download/version.json" \
+		"https://raw.githubusercontent.com/${repo}/${path}" \
+		"https://cdn.jsdelivr.net/gh/${repo}@${path%%/*}/${path#*/}"
+}
+
+_collect_manifest_candidates() {
+	local repo base m url prefix i=0 origin kind wrapped
+	_cand_init
+	repo=$(_github_repo)
 
 	base=$(gogogo_get_base_url)
 	if [ -n "$base" ]; then
-		m=$(_fetch_manifest "$base" "$UPDATE_MANIFEST") && \
-			_candidate_add "base:${base}" "$m" || \
-			_log "manifest skip (base_url)"
+		url=$(_abs_url "$base" "$UPDATE_MANIFEST")
+		i=$((i + 1))
+		_try_manifest "base:${base}" "$url" "$(printf '%03d' "$i")" &
 	fi
 
-	repo=$(_github_repo)
-	raw_prefix=$(_github_raw_prefix)
-	if [ -n "$raw_prefix" ]; then
-		m=$(_fetch_manifest "$raw_prefix" "$GITHUB_MANIFEST_PATH") && \
-			_candidate_add "github:${repo}" "$m" && raw_ok=1 || \
-			_log "manifest skip (github raw)"
-	fi
+	for origin in $(_origin_manifest_urls); do
+		case "$origin" in
+			*jsdelivr.net*)
+				i=$((i + 1))
+				_try_manifest "jsdelivr:${origin}" "$origin" "$(printf '%03d' "$i")" &
+				continue
+				;;
+			*raw.githubusercontent.com*)
+				kind="github"
+				;;
+			*)
+				kind="github"
+				;;
+		esac
+		i=$((i + 1))
+		_try_manifest "${kind}:${origin}" "$origin" "$(printf '%03d' "$i")" &
+		i=$((i + 1))
+		wrapped=$(_wrap_github "$origin" "kkgithub")
+		[ "$wrapped" != "$origin" ] && _try_manifest "kkgithub:${wrapped}" "$wrapped" "$(printf '%03d' "$i")" &
+		for prefix in $(_mirror_prefixes); do
+			i=$((i + 1))
+			wrapped=$(_wrap_github "$origin" "$prefix")
+			_try_manifest "proxy:${wrapped}" "$wrapped" "$(printf '%03d' "$i")" &
+		done
+	done
+	wait
 
-	mirror_prefix=$(_github_mirror_prefix)
-	if [ -n "$mirror_prefix" ]; then
-		m=$(_fetch_manifest "$mirror_prefix" "blob/${GITHUB_MANIFEST_PATH}") && \
-			_candidate_add "mirror:${mirror_prefix}" "$m" && blob_ok=1 || \
-			_log "manifest skip (github mirror blob)"
-		# raw/blob 皆成功则不再扫 Release（避免大量 404）；否则用加速 Release 补最新
-		if [ "$raw_ok" != 1 ] || [ "$blob_ok" != 1 ]; then
-			_probe_release_manifests "$mirror_prefix" "mirror"
-		fi
-	fi
-
-	# 原始 GitHub Release 仅作补源（国内常慢）
-	if [ "$raw_ok" != 1 ]; then
-		release_prefix=$(_github_release_prefix)
-		[ -n "$release_prefix" ] && _probe_release_manifests "$release_prefix" "github"
-	fi
-
-	[ -f "$CANDIDATES" ] || return 1
+	ls "$CAND_DIR" >/dev/null 2>&1 || return 1
+	set -- "$CAND_DIR"/*
+	[ -f "$1" ] || return 1
 	return 0
 }
 
 _pick_newest_manifest() {
-	local best_src="" best_m="" best_ver="" best_rank=0 src m ver rank
+	local best_src="" best_m="" best_url="" best_ver="" best_rank=0 src m url ver rank f
 
-	[ -f "$CANDIDATES" ] || return 1
-
-	while read -r src; do
-		read -r m || break
+	for f in "$CAND_DIR"/*; do
+		[ -f "$f" ] || continue
+		src=$(sed -n '1p' "$f")
+		m=$(sed -n '2p' "$f")
+		url=$(sed -n '3p' "$f")
 		[ -n "$src" ] && [ -n "$m" ] || continue
 		_manifest_valid "$m" || continue
 		ver=$(_manifest_version "$m")
@@ -197,49 +209,81 @@ _pick_newest_manifest() {
 			best_ver="$ver"
 			best_src="$src"
 			best_m="$m"
+			best_url="$url"
 			best_rank="$rank"
 		elif [ "$ver" = "$best_ver" ] && [ "$rank" -gt "$best_rank" ]; then
 			best_src="$src"
 			best_m="$m"
+			best_url="$url"
 			best_rank="$rank"
 		fi
-	done <"$CANDIDATES"
-
-	rm -f "$CANDIDATES"
+	done
+	rm -rf "$CAND_DIR"
 	[ -n "$best_m" ] && [ -n "$best_src" ] || return 1
-
 	_log "manifest picked ($best_src) version=$best_ver"
-	printf '%s\n%s\n' "$best_m" "$best_src"
+	printf '%s\n%s\n%s\n' "$best_m" "$best_src" "$best_url"
 	return 0
 }
 
-_ipk_base_for_source() {
-	local ver="$1" src="$2" repo tag
+_ipk_url_list() {
+	local ver="$1" ipk_name="$2" win_url="$3" src="$4" repo tag origin prefix wrapped
+	repo=$(_github_repo)
+	tag=$(_release_tag "$ver")
 
-	case "$src" in
-		base:*)
-			echo "${src#base:}"
-			;;
-		github:*)
-			repo=${src#github:}
-			tag=$(_release_tag "$ver")
-			case "$repo" in
-				http://*|https://*) echo "${repo%/}/releases/download/${tag}" ;;
-				*) echo "https://github.com/${repo}/releases/download/${tag}" ;;
-			esac
-			;;
-		mirror:*)
-			tag=$(_release_tag "$ver")
-			echo "${src#mirror:}/releases/download/${tag}"
-			;;
-		*)
-			return 1
+	# 1) 与命中 manifest 同目录
+	case "$win_url" in
+		*version.json)
+			echo "${win_url%version.json}${ipk_name}"
 			;;
 	esac
+
+	# 2) base_url 相对路径
+	case "$src" in
+		base:*)
+			echo "$(_abs_url "${src#base:}" "$ipk_name")"
+			;;
+	esac
+
+	origin="https://github.com/${repo}/releases/download/${tag}/${ipk_name}"
+	echo "$origin"
+	echo "https://github.com/${repo}/releases/latest/download/${ipk_name}"
+	echo "$(_wrap_github "$origin" "kkgithub")"
+	for prefix in $(_mirror_prefixes); do
+		wrapped=$(_wrap_github "$origin" "$prefix")
+		echo "$wrapped"
+		echo "$(_wrap_github "https://github.com/${repo}/releases/latest/download/${ipk_name}" "$prefix")"
+	done
+}
+
+_uniq_urls() {
+	awk 'NF && !seen[$0]++ { print }'
+}
+
+_download_ipk() {
+	local ver="$1" ipk_name="$2" win_url="$3" src="$4" sha="$5" url list
+	rm -f "$UPDATE_IPK"
+	list="/tmp/gogogo_update_ipk_urls.$$"
+	_ipk_url_list "$ver" "$ipk_name" "$win_url" "$src" | _uniq_urls >"$list"
+	while read -r url; do
+		[ -n "$url" ] || continue
+		_log "try ipk $url"
+		if gogogo_curl "$url" --connect-timeout "$CURL_TIMEOUT" --max-time 300 \
+			--http1.1 -fSL -o "$UPDATE_IPK" 2>/dev/null; then
+			if echo "$sha  $UPDATE_IPK" | sha256sum -c - >/dev/null 2>&1; then
+				_log "ipk ok from $url"
+				rm -f "$list"
+				return 0
+			fi
+			_log "sha256 mismatch from $url"
+			rm -f "$UPDATE_IPK"
+		fi
+	done <"$list"
+	rm -f "$list" "$UPDATE_IPK"
+	return 1
 }
 
 _check_update() {
-	local lines manifest src_hint new url sha ipk_base cur ipk_url
+	local lines manifest src_hint win_url new url sha cur
 
 	[ "${CPE_AUTO_UPDATE:-0}" = "1" ] || {
 		_log "auto update disabled"
@@ -260,8 +304,9 @@ _check_update() {
 		_log "no valid manifest from any source"
 		return 2
 	}
-	src_hint=$(echo "$lines" | tail -n 1)
-	manifest=$(echo "$lines" | sed '$d')
+	manifest=$(echo "$lines" | sed -n '1p')
+	src_hint=$(echo "$lines" | sed -n '2p')
+	win_url=$(echo "$lines" | sed -n '3p')
 
 	new=$(echo "$manifest" | jq -r '.version // empty')
 	url=$(echo "$manifest" | jq -r '.url // empty')
@@ -276,26 +321,13 @@ _check_update() {
 	[ -n "$cur" ] || cur="0"
 
 	if ! _version_gt "$new" "$cur"; then
+		_log "already latest ($cur)"
 		return 0
 	fi
 
-	ipk_base=$(_ipk_base_for_source "$new" "$src_hint") || {
-		_log "unknown manifest source"
-		return 2
-	}
-
-	ipk_url=$(_abs_url "$ipk_base" "$url")
-	_log "upgrade $cur -> $new from $ipk_base"
-
-	rm -f "$UPDATE_IPK"
-	gogogo_curl "$ipk_url" --connect-timeout "$CURL_TIMEOUT" --max-time 300 -fSL -o "$UPDATE_IPK" || {
+	_log "upgrade $cur -> $new"
+	if ! _download_ipk "$new" "$url" "$win_url" "$src_hint" "$sha"; then
 		_log "ipk download failed"
-		rm -f "$UPDATE_IPK"
-		return 2
-	}
-
-	if ! echo "$sha  $UPDATE_IPK" | sha256sum -c - >/dev/null 2>&1; then
-		_log "sha256 mismatch"
 		rm -f "$UPDATE_IPK"
 		return 2
 	fi
