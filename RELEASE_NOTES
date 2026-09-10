@@ -1,0 +1,5 @@
+## 供创未来 1.0.1
+
+- 更新通道同时发布客户端与 MT7981 固件（对齐 luci-app-nsclient）
+- 客户端 `2026091005`：GitHub 多线路自动更新
+- 固件含 luci-theme-gogogo 1.0.1 与 luci-app-gogogo 2026091005

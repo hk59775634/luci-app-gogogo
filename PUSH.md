@@ -21,14 +21,32 @@ make package/luci-app-gogogo/compile V=s
 
 ## 正式推送流程
 
+完整更新必须同时带客户端 ipk 和 sysupgrade 固件（与 luci-app-nsclient 相同）。GitHub tag 用主题/固件版本（如 `v1.0.1`）。
+
 ```sh
 cd package/custom_packages/luci-app-gogogo
-./scripts/publish-release.sh --ipk /path/to/luci-app-gogogo_<版本>-1_all.ipk --push
+./scripts/publish-release.sh \
+  --ipk /path/to/luci-app-gogogo_<appver>_all.ipk \
+  --sysupgrade /path/to/openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-sysupgrade.bin \
+  --factory /path/to/openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-factory.bin \
+  --push
 ```
 
 仓库：`https://github.com/hk59775634/luci-app-gogogo`（**公开仓库**，以 `env` 中 `CPE_GITHUB_REPO` 为准）。
 
-设备自动更新（见 `gogogo-update`）并行探测下列源，取版本号最新者；同版本优先走国内加速下 ipk：
+Release 资产：
+
+| 文件 | 谁读 |
+|------|------|
+| `manifest.json` | LuCI **更新**页（固件 + 客户端） |
+| `version.json` | `gogogo-update` 守护进程（仅客户端） |
+| `luci-app-gogogo_*_all.ipk` | 客户端 |
+| `*-sysupgrade.bin` | 固件升级 |
+| `*-factory.bin` | 出厂刷写 |
+
+更新说明来自仓库根目录 `RELEASE_NOTES`。
+
+设备自动更新客户端（见 `gogogo-update`）并行探测下列源，取版本号最新者；同版本优先走国内加速下 ipk：
 
 | 源 | manifest |
 |------|----------|

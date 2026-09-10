@@ -1,5 +1,7 @@
 *.ipk
+*.bin
 *.o
 *.swp
 *~
 release/*.ipk
+release/*.bin
