@@ -39,8 +39,7 @@ make package/luci-theme-gogogo/compile V=s
 | 命令 | 作用 |
 |------|------|
 | `gogogo status` | LuCI 状态 JSON |
-| `gogogo direction_status` | 查询多出口线路（网站门户会话） |
-| `gogogo set_direction us\|hk [验证码]` | 切换美国 / 香港并重连 |
+| `gogogo set_direction us\|hk` | 切换美国 / 香港（BOSS 接口；单出口会提示无法切换） |
 | `gogogo refresh_account` | 刷新到期时间 |
 | `gogogo-luci-diag start\|poll` | 连接诊断 |
 | `gogogo-cred sync\|has\|repair` | UCI ↔ U-Boot |

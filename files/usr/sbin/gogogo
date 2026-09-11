@@ -26,6 +26,7 @@ PORTAL_USER_HTML="/var/run/gogogo/portal_user.html"
 PORTAL_LOCK="/var/run/gogogo/portal.lock"
 PORTAL_BOUND="/var/run/gogogo/portal_account"
 PORTAL_UA="Mozilla/5.0 (Linux; OpenWrt) AppleWebKit/537.36 GogogoCPE"
+BOSS_RESP="/var/run/gogogo/boss_engress.json"
 
 _load_defaults() {
 	vpname="${VPNAME:-GOGOGO}"
@@ -49,6 +50,13 @@ _load_defaults() {
 	firewall_zone="${FIREWALL_ZONE:-wan}"
 	portal_url="${CPE_PORTAL_URL:-https://www.gogogofuture.com}"
 	portal_timeout="${CPE_PORTAL_TIMEOUT:-10}"
+	boss_url="${CPE_BOSS_URL:-https://boss.gogogofuture.com}"
+	boss_set_engress_path="${CPE_BOSS_SET_ENGRESS_PATH:-/api/router/account/set_engress}"
+	boss_url=$(echo "$boss_url" | sed 's|/*$||')
+	case "$boss_set_engress_path" in
+		/*) ;;
+		*) boss_set_engress_path="/${boss_set_engress_path}" ;;
+	esac
 	dns_local_1="${DNS_LOCAL_1:-180.76.76.76}"
 	dns_remote_1="${DNS_REMOTE_1:-8.8.8.8}"
 	dns_local_fallback="${DNS_LOCAL_FALLBACK:-180.76.76.76}"
@@ -1420,6 +1428,53 @@ _portal_post_direction() {
 		--data-urlencode "direction=${dir}"
 }
 
+_boss_set_engress() {
+	local dir="$1" payload max_time url httpc
+	boss_http=""
+	boss_status=""
+	boss_code=""
+	boss_msg=""
+	username=$(config_get username)
+	password=$(config_get password)
+	command -v jq >/dev/null 2>&1 || {
+		boss_msg="jq missing"
+		return 1
+	}
+	payload=$(jq -n \
+		--arg account "$username" \
+		--arg password "$password" \
+		--arg engress_default "$dir" \
+		'{account: $account, password: $password, engress_default: $engress_default}') || {
+		boss_msg="出口请求编码失败"
+		return 1
+	}
+	_status_dir
+	url="${boss_url}${boss_set_engress_path}"
+	max_time=$((${portal_timeout:-10} + 5))
+	httpc=$(gogogo_curl "$url" \
+		--silent --show-error \
+		--connect-timeout "${portal_timeout:-10}" --max-time "$max_time" \
+		-H 'Accept: application/json' \
+		-H 'Content-Type: application/json' \
+		-d "$payload" \
+		-o "$BOSS_RESP" \
+		-w '%{http_code}') || {
+		boss_http="${httpc:-000}"
+		boss_msg="出口接口请求失败"
+		return 1
+	}
+	boss_http="$httpc"
+	chmod 0600 "$BOSS_RESP" 2>/dev/null || true
+	if [ ! -s "$BOSS_RESP" ] || ! jq -e . "$BOSS_RESP" >/dev/null 2>&1; then
+		boss_msg="出口接口无有效响应"
+		return 1
+	fi
+	boss_status=$(jq -r '.status // empty' "$BOSS_RESP")
+	boss_code=$(jq -r '.code // empty' "$BOSS_RESP")
+	boss_msg=$(jq -r '.message // empty' "$BOSS_RESP")
+	return 0
+}
+
 _direction_label() {
 	case "$1" in
 		us) echo "美国" ;;
@@ -1464,61 +1519,30 @@ _apply_after_direction() {
 	return 0
 }
 
-_direction_status_core() {
-	local code="$1" rc cached_dir tw_json
-	cached_dir=$(config_get direction)
-	tw_json=$(_uci_two_ways_json)
-	if [ -z "$(config_get username)" ] || [ -z "$(config_get password)" ]; then
-		_direction_json true "$tw_json" "$cached_dir" false false "请先登录账号" false
-		return 0
-	fi
-	_ensure_portal "$code"
-	rc=$?
-	if [ "$rc" = 2 ]; then
-		_portal_fetch_captcha || true
-		_direction_json false "$tw_json" "$cached_dir" true false "获取出口需要网站验证码" false
-		return 0
-	fi
-	if [ "$rc" != 0 ]; then
-		_portal_fetch_captcha || true
-		_direction_json false "$tw_json" "$cached_dir" true false "${portal_login_msg:-网站登录失败，请重试验证码}" false
-		return 0
-	fi
-	if [ "$portal_two_ways" = 1 ]; then
-		_direction_json true true "${portal_direction:-$cached_dir}" false true "已获取多出口线路，请选择美国或香港" false
-	else
-		_direction_json true false "" false true "当前为单出口账号，已分配可用线路" false
-	fi
+_set_direction_mark_single() {
+	local msg="${1:-当前账号无法切换出口}"
+	uci set "${CPE_UCI}.@default[0].two_ways=0"
+	uci -q delete "${CPE_UCI}.@default[0].direction"
+	uci commit "$CPE_UCI"
+	_direction_json false false "" false true "$msg" false
 }
 
-_direction_status() {
-	_status_dir
-	_apply_uci_overrides
-	_maybe_reset_on_account_change
-	(
-		flock -n 8 || {
-			_direction_json false "$(_uci_two_ways_json)" "$(config_get direction)" false false "正在获取出口，请稍候" false
-			exit 0
-		}
-		_direction_status_core "$1"
-	) 8>"$PORTAL_LOCK"
+_set_direction_commit() {
+	local dir="$1" reconnect=false label suffix
+	uci set "${CPE_UCI}.@default[0].direction=${dir}"
+	uci set "${CPE_UCI}.@default[0].two_ways=1"
+	uci commit "$CPE_UCI"
+	label=$(_direction_label "$dir")
+	suffix="，连接后生效"
+	if _apply_after_direction; then
+		reconnect=true
+		suffix="，正在接入新线路"
+	fi
+	_direction_json true true "$dir" false true "已切换为${label}线路${suffix}" "$reconnect"
 }
 
-_set_direction_core() {
-	local dir="$1" code="$2" resp rc pmsg reconnect=false label suffix
-	case "$dir" in
-		us | hk) ;;
-		*)
-			_direction_json false false "" false false "线路参数无效" false
-			return 1
-			;;
-	esac
-	username=$(config_get username)
-	password=$(config_get password)
-	if [ -z "$username" ] || [ -z "$password" ]; then
-		_direction_json false "$(_uci_two_ways_json)" "$dir" false false "请先填写账号和密码" false
-		return 1
-	fi
+_set_direction_via_portal() {
+	local dir="$1" code="$2" resp rc pmsg
 	_portal_probe
 	if [ "$portal_logged_in" != 1 ]; then
 		if [ -z "$code" ]; then
@@ -1533,10 +1557,7 @@ _set_direction_core() {
 		_portal_probe
 	fi
 	if [ "$portal_logged_in" = 1 ] && [ "$portal_two_ways" != 1 ]; then
-		uci set "${CPE_UCI}.@default[0].two_ways=0"
-		uci -q delete "${CPE_UCI}.@default[0].direction"
-		uci commit "$CPE_UCI"
-		_direction_json false false "" false true "当前账号不是多出口，无需选择线路" false
+		_set_direction_mark_single
 		return 1
 	fi
 	resp=$(_portal_post_direction "$dir")
@@ -1551,16 +1572,39 @@ _set_direction_core() {
 		_direction_json false true "$dir" false true "${pmsg:-切换失败}" false
 		return 1
 	fi
-	uci set "${CPE_UCI}.@default[0].direction=${dir}"
-	uci set "${CPE_UCI}.@default[0].two_ways=1"
-	uci commit "$CPE_UCI"
-	label=$(_direction_label "$dir")
-	suffix="，连接后生效"
-	if _apply_after_direction; then
-		reconnect=true
-		suffix="，正在接入新线路"
+	_set_direction_commit "$dir"
+}
+
+_set_direction_core() {
+	local dir="$1" code="$2"
+	case "$dir" in
+		us | hk) ;;
+		*)
+			_direction_json false false "" false false "线路参数无效" false
+			return 1
+			;;
+	esac
+	username=$(config_get username)
+	password=$(config_get password)
+	if [ -z "$username" ] || [ -z "$password" ]; then
+		_direction_json false "$(_uci_two_ways_json)" "$dir" false false "请先填写账号和密码" false
+		return 1
 	fi
-	_direction_json true true "$dir" false true "已切换为${label}线路${suffix}" "$reconnect"
+	if _boss_set_engress "$dir"; then
+		if [ "$boss_status" = "success" ] || [ "$boss_code" = "200" ]; then
+			_set_direction_commit "$dir"
+			return $?
+		fi
+		case "$boss_msg" in
+			*非双线* | *无法设置默认出口*)
+				_set_direction_mark_single "当前账号无法切换出口"
+				return 1
+				;;
+		esac
+		_direction_json false true "$dir" false true "${boss_msg:-切换失败}" false
+		return 1
+	fi
+	_set_direction_via_portal "$dir" "$code"
 }
 
 _set_direction() {
@@ -1987,10 +2031,6 @@ case "$action" in
 		;;
 	status)
 		_write_status
-		;;
-	direction_status)
-		_maybe_reset_on_account_change
-		_direction_status "$2"
 		;;
 	set_direction)
 		_maybe_reset_on_account_change

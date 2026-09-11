@@ -16,7 +16,6 @@ function index()
 	entry({"admin", "gogogo", "disconnect"}, call("action_disconnect")).leaf = true
 	entry({"admin", "gogogo", "save"}, call("action_save")).leaf = true
 	entry({"admin", "gogogo", "refresh_account"}, call("action_refresh_account")).leaf = true
-	entry({"admin", "gogogo", "direction_status"}, call("action_direction_status")).leaf = true
 	entry({"admin", "gogogo", "set_direction"}, call("action_set_direction")).leaf = true
 	entry({"admin", "gogogo", "portal_captcha"}, call("action_portal_captcha")).leaf = true
 	entry({"admin", "gogogo", "shop_status"}, call("action_shop_status")).leaf = true
@@ -326,16 +325,6 @@ end
 function action_refresh_account()
 	http.prepare_content("application/json")
 	http.write_json(run_json("/usr/sbin/gogogo refresh_account"))
-end
-
-function action_direction_status()
-	local code = valid_captcha(http.formvalue("code") or "")
-	local cmd = "/usr/sbin/gogogo direction_status"
-	if code then
-		cmd = cmd .. " " .. sh_quote(code)
-	end
-	http.prepare_content("application/json")
-	http.write_json(run_json(cmd))
 end
 
 function action_set_direction()
