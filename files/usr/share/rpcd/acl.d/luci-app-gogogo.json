@@ -14,7 +14,8 @@
 				"/usr/sbin/gogogo-cred": [ "exec" ],
 				"/usr/sbin/gogogo-url": [ "exec" ],
 				"/usr/sbin/gogogo-update": [ "exec" ],
-				"/var/run/gogogo/status.json": [ "read" ]
+				"/var/run/gogogo/status.json": [ "read" ],
+				"/var/run/gogogo/portal_captcha.png": [ "read" ]
 			}
 		},
 		"write": {

@@ -20,6 +20,12 @@ ENDPOINT_HOST_FILE="/tmp/gogogo_endpoint_host"
 ACCOUNT_REFRESH_LOCK="/tmp/gogogo_account_refresh.lock"
 ACCOUNT_REFRESH_RATE_STAMP="/tmp/gogogo_account_refresh.stamp"
 ACCOUNT_REFRESH_MIN_SEC="${CPE_ACCOUNT_REFRESH_MIN_SEC:-60}"
+PORTAL_CJ="/var/run/gogogo/portal.cj"
+PORTAL_CAPTCHA="/var/run/gogogo/portal_captcha.png"
+PORTAL_USER_HTML="/var/run/gogogo/portal_user.html"
+PORTAL_LOCK="/var/run/gogogo/portal.lock"
+PORTAL_BOUND="/var/run/gogogo/portal_account"
+PORTAL_UA="Mozilla/5.0 (Linux; OpenWrt) AppleWebKit/537.36 GogogoCPE"
 
 _load_defaults() {
 	vpname="${VPNAME:-GOGOGO}"
@@ -41,6 +47,8 @@ _load_defaults() {
 	wg_hs_max_age="${WG_HANDSHAKE_MAX_AGE:-180}"
 	wg_endpoint_port="${CPE_WG_ENDPOINT_PORT:-2049}"
 	firewall_zone="${FIREWALL_ZONE:-wan}"
+	portal_url="${CPE_PORTAL_URL:-https://www.gogogofuture.com}"
+	portal_timeout="${CPE_PORTAL_TIMEOUT:-10}"
 	dns_local_1="${DNS_LOCAL_1:-180.76.76.76}"
 	dns_remote_1="${DNS_REMOTE_1:-8.8.8.8}"
 	dns_local_fallback="${DNS_LOCAL_FALLBACK:-180.76.76.76}"
@@ -1211,6 +1219,564 @@ _status_dir() {
 	mkdir -p /var/run/gogogo
 }
 
+_portal_cookie_init() {
+	_status_dir
+	touch "$PORTAL_CJ"
+	chmod 0600 "$PORTAL_CJ"
+}
+
+_portal_drop() {
+	rm -f "$PORTAL_CJ" "$PORTAL_CAPTCHA" "$PORTAL_USER_HTML" "$PORTAL_BOUND"
+}
+
+_uci_clear_exit() {
+	uci -q delete "${CPE_UCI}.@default[0].two_ways"
+	uci -q delete "${CPE_UCI}.@default[0].direction"
+	uci -q delete "${CPE_UCI}.@default[0].product_id"
+	uci -q delete "${CPE_UCI}.@default[0].product_name"
+	uci commit "$CPE_UCI"
+}
+
+_reset_exit_state() {
+	_status_dir
+	_portal_drop
+	_uci_clear_exit
+	rm -f "$API_HASH_FILE"
+	uci set "${CPE_UCI}.@default[0].last_username=$(config_get username)"
+	uci set "${CPE_UCI}.@default[0].update_info=1"
+	uci commit "$CPE_UCI"
+}
+
+_reset_exit_cmd() {
+	_apply_uci_overrides
+	_reset_exit_state
+	_deletevpn
+	_write_status >/dev/null
+	printf '{"ok":true,"msg":"已清空上一账号线路与套餐缓存"}\n'
+}
+
+_maybe_reset_on_account_change() {
+	local cur last
+	cur=$(config_get username)
+	last=$(config_get last_username)
+	[ -n "$cur" ] || return 0
+	[ "$cur" = "$last" ] && return 0
+	_reset_exit_state
+	# 有上一账号才拆隧道；仅缺 last_username（升级后首次）只清线路缓存
+	[ -n "$last" ] && _deletevpn
+}
+
+# 网站门户请求（与 CPE /api/v1/user 不是同一套登录）
+_portal_curl() {
+	local url="$1" max_time
+	shift
+	_portal_cookie_init
+	[ -n "$portal_url" ] || portal_url="${CPE_PORTAL_URL:-https://www.gogogofuture.com}"
+	max_time=$((portal_timeout + 5))
+	gogogo_curl "$url" \
+		--silent --show-error \
+		--connect-timeout "${portal_timeout:-10}" --max-time "$max_time" \
+		-A "$PORTAL_UA" \
+		-b "$PORTAL_CJ" -c "$PORTAL_CJ" \
+		"$@"
+	chmod 0600 "$PORTAL_CJ" 2>/dev/null || true
+}
+
+_direction_json() {
+	local ok="$1" two_ways="$2" direction="$3" need_captcha="$4" logged_in="$5" msg="$6" reconnect="${7:-false}"
+	command -v jq >/dev/null 2>&1 || {
+		printf '{"ok":%s,"two_ways":%s,"direction":"%s","need_captcha":%s,"logged_in":%s,"msg":"%s","reconnect":%s}\n' \
+			"$ok" "$two_ways" "$(_json_escape "$direction")" "$need_captcha" "$logged_in" "$(_json_escape "$msg")" "$reconnect"
+		return 0
+	}
+	jq -n \
+		--argjson ok "$ok" \
+		--argjson two_ways "$two_ways" \
+		--arg direction "$direction" \
+		--argjson need_captcha "$need_captcha" \
+		--argjson logged_in "$logged_in" \
+		--arg msg "$msg" \
+		--argjson reconnect "$reconnect" \
+		'{
+			ok: $ok,
+			two_ways: $two_ways,
+			direction: $direction,
+			need_captcha: $need_captcha,
+			logged_in: $logged_in,
+			msg: $msg,
+			reconnect: $reconnect,
+			options: [
+				{id: "us", name: "US 美国"},
+				{id: "hk", name: "HK 香港"}
+			]
+		}'
+}
+
+_html_text_after_label() {
+	awk -v lab="$2" '
+		index($0, lab) { want=1; next }
+		want && /label_info/ {
+			gsub(/<[^>]+>/, "")
+			gsub(/^[ \t]+|[ \t]+$/, "")
+			print
+			exit
+		}
+	' "$1"
+}
+
+_portal_parse_html() {
+	local html_file="$1" want_user
+	portal_logged_in=0
+	portal_two_ways=0
+	portal_direction=""
+	portal_account=""
+	portal_product_name=""
+	portal_product_id=""
+	[ -s "$html_file" ] || return 1
+	portal_account=$(_html_text_after_label "$html_file" "接入账户")
+	portal_product_name=$(_html_text_after_label "$html_file" "产品名称")
+	portal_product_id=$(grep -o 'product_id:"[0-9]*"' "$html_file" | head -n1 | sed 's/[^0-9]//g')
+	want_user=$(config_get username)
+	if [ -n "$portal_account" ] && [ -n "$want_user" ] && [ "$portal_account" != "$want_user" ]; then
+		_portal_drop
+		portal_logged_in=0
+		portal_two_ways=0
+		portal_direction=""
+		portal_account=""
+		portal_product_name=""
+		portal_product_id=""
+		return 1
+	fi
+	if grep -q 'id="two-ways-direction-item"' "$html_file"; then
+		portal_logged_in=1
+		portal_two_ways=1
+		portal_direction=$(grep -o 'var initial = "[a-z]*"' "$html_file" | head -n1 | sed 's/.*var initial = "\([a-z]*\)".*/\1/')
+		case "$portal_direction" in
+			us | hk) ;;
+			*) portal_direction="" ;;
+		esac
+		return 0
+	fi
+	if grep -qE '/index/user/outlogin\.html|接入账户' "$html_file"; then
+		portal_logged_in=1
+		portal_two_ways=0
+		return 0
+	fi
+	return 1
+}
+
+_portal_probe() {
+	portal_logged_in=0
+	portal_two_ways=0
+	portal_direction=""
+	_portal_curl "${portal_url}/user/index" \
+		-H 'accept: text/html,application/xhtml+xml' \
+		--location \
+		-o "$PORTAL_USER_HTML" >/dev/null 2>&1 || true
+	_portal_parse_html "$PORTAL_USER_HTML"
+	rm -f "$PORTAL_USER_HTML"
+}
+
+_portal_fetch_captcha() {
+	_portal_cookie_init
+	_portal_curl "${portal_url}/index/index/verify.html?t=$(date +%s)" \
+		-H 'accept: image/png,image/*;q=0.8' \
+		-o "$PORTAL_CAPTCHA" >/dev/null 2>&1 || return 1
+	[ -s "$PORTAL_CAPTCHA" ]
+}
+
+_portal_login() {
+	local code="$1" resp rc pmsg
+	username=$(config_get username)
+	password=$(config_get password)
+	portal_login_msg=""
+	resp=$(_portal_curl "${portal_url}/index/index/login.html" \
+		-H 'accept: application/json, text/javascript, */*; q=0.01' \
+		-H 'x-requested-with: XMLHttpRequest' \
+		-H 'content-type: application/x-www-form-urlencoded; charset=UTF-8' \
+		-H "origin: ${portal_url}" \
+		-H "referer: ${portal_url}/index/index/login" \
+		--data-urlencode "username=${username}" \
+		--data-urlencode "password=${password}" \
+		--data-urlencode "code=${code}")
+	rc=$(echo "$resp" | jq -r '.resCode | tostring' 2>/dev/null)
+	pmsg=$(echo "$resp" | jq -r '.resMessage // empty' 2>/dev/null)
+	if [ "$rc" = "9999" ]; then
+		return 0
+	fi
+	_portal_fetch_captcha || true
+	portal_login_msg="${pmsg:-网站登录失败}"
+	return 1
+}
+
+_portal_post_direction() {
+	local dir="$1"
+	_portal_curl "${portal_url}/index/User/set_two_ways_direction.html" \
+		-H 'accept: application/json, text/javascript, */*; q=0.01' \
+		-H 'x-requested-with: XMLHttpRequest' \
+		-H 'content-type: application/x-www-form-urlencoded; charset=UTF-8' \
+		-H "origin: ${portal_url}" \
+		-H "referer: ${portal_url}/user/index" \
+		--data-urlencode "direction=${dir}"
+}
+
+_direction_label() {
+	case "$1" in
+		us) echo "美国" ;;
+		hk) echo "香港" ;;
+		*) echo "$1" ;;
+	esac
+}
+
+_uci_two_ways_json() {
+	case "$(config_get two_ways)" in
+		1) echo true ;;
+		*) echo false ;;
+	esac
+}
+
+_portal_save_user_fields() {
+	if [ "$portal_two_ways" = 1 ]; then
+		uci set "${CPE_UCI}.@default[0].two_ways=1"
+		[ -n "$portal_direction" ] && uci set "${CPE_UCI}.@default[0].direction=${portal_direction}"
+	else
+		uci set "${CPE_UCI}.@default[0].two_ways=0"
+		uci -q delete "${CPE_UCI}.@default[0].direction"
+	fi
+	if [ -n "$portal_product_id" ]; then
+		uci set "${CPE_UCI}.@default[0].product_id=${portal_product_id}"
+	fi
+	if [ -n "$portal_product_name" ]; then
+		uci set "${CPE_UCI}.@default[0].product_name=${portal_product_name}"
+	fi
+	uci commit "$CPE_UCI"
+	printf '%s' "$(config_get username)" > "$PORTAL_BOUND"
+}
+
+_apply_after_direction() {
+	rm -f "$API_HASH_FILE"
+	uci set "${CPE_UCI}.@default[0].update_info=1"
+	uci commit "$CPE_UCI"
+	[ "$(config_get enable)" = 1 ] || return 1
+	sleep 2
+	_check_config
+	_write_status >/dev/null
+	return 0
+}
+
+_direction_status() {
+	_apply_uci_overrides
+	_maybe_reset_on_account_change
+	local cached_dir tw_json
+	cached_dir=$(config_get direction)
+	tw_json=$(_uci_two_ways_json)
+	if [ -z "$(config_get username)" ]; then
+		_direction_json true "$tw_json" "$cached_dir" false false "请先登录账号" false
+		return 0
+	fi
+	_portal_probe
+	if [ "$portal_logged_in" = 1 ]; then
+		_portal_save_user_fields
+		if [ "$portal_two_ways" = 1 ]; then
+			_direction_json true true "${portal_direction:-$cached_dir}" false true "" false
+		else
+			_direction_json true false "" false true "" false
+		fi
+		return 0
+	fi
+	_direction_json true "$tw_json" "$cached_dir" false false "" false
+}
+
+_set_direction_core() {
+	local dir="$1" code="$2" resp rc pmsg reconnect=false label suffix
+	case "$dir" in
+		us | hk) ;;
+		*)
+			_direction_json false false "" false false "线路参数无效" false
+			return 1
+			;;
+	esac
+	username=$(config_get username)
+	password=$(config_get password)
+	if [ -z "$username" ] || [ -z "$password" ]; then
+		_direction_json false "$(_uci_two_ways_json)" "$dir" false false "请先填写账号和密码" false
+		return 1
+	fi
+	_portal_probe
+	if [ "$portal_logged_in" != 1 ]; then
+		if [ -z "$code" ]; then
+			_portal_fetch_captcha || true
+			_direction_json false true "$dir" true false "切换线路需要网站验证码" false
+			return 1
+		fi
+		_portal_login "$code" || {
+			_direction_json false true "$dir" true false "${portal_login_msg:-网站登录失败}" false
+			return 1
+		}
+		_portal_probe
+	fi
+	if [ "$portal_logged_in" = 1 ] && [ "$portal_two_ways" != 1 ]; then
+		uci set "${CPE_UCI}.@default[0].two_ways=0"
+		uci -q delete "${CPE_UCI}.@default[0].direction"
+		uci commit "$CPE_UCI"
+		_direction_json false false "" false true "当前账号不是多出口，无需选择线路" false
+		return 1
+	fi
+	resp=$(_portal_post_direction "$dir")
+	if [ -z "$resp" ] || ! echo "$resp" | jq -e . >/dev/null 2>&1; then
+		_portal_fetch_captcha || true
+		_direction_json false true "$dir" true false "网站登录已过期，请输入验证码后重试" false
+		return 1
+	fi
+	rc=$(echo "$resp" | jq -r '.resCode | tostring' 2>/dev/null)
+	pmsg=$(echo "$resp" | jq -r '.resMessage // empty' 2>/dev/null)
+	if [ "$rc" != "9999" ]; then
+		_direction_json false true "$dir" false true "${pmsg:-切换失败}" false
+		return 1
+	fi
+	uci set "${CPE_UCI}.@default[0].direction=${dir}"
+	uci set "${CPE_UCI}.@default[0].two_ways=1"
+	uci commit "$CPE_UCI"
+	label=$(_direction_label "$dir")
+	suffix="，连接后生效"
+	if _apply_after_direction; then
+		reconnect=true
+		suffix="，正在接入新线路"
+	fi
+	_direction_json true true "$dir" false true "已切换为${label}线路${suffix}" "$reconnect"
+}
+
+_set_direction() {
+	_status_dir
+	_apply_uci_overrides
+	(
+		flock -n 8 || {
+			_direction_json false true "" false false "正在切换线路，请稍候" false
+			exit 0
+		}
+		_set_direction_core "$1" "$2"
+	) 8>"$PORTAL_LOCK"
+}
+
+_portal_captcha_cmd() {
+	_apply_uci_overrides
+	if _portal_fetch_captcha; then
+		printf '{"ok":true}\n'
+	else
+		printf '{"ok":false,"msg":"验证码获取失败"}\n'
+	fi
+}
+
+_shop_json() {
+	local extra
+	if [ -n "$1" ]; then
+		extra="$1"
+	else
+		extra='{}'
+	fi
+	command -v jq >/dev/null 2>&1 || {
+		printf '{"ok":false,"msg":"jq missing"}\n'
+		return 0
+	}
+	jq -n \
+		--argjson extra "$extra" \
+		--arg product_id "$(config_get product_id)" \
+		--arg product_name "$(config_get product_name)" \
+		--argjson two_ways "$(_uci_two_ways_json)" \
+		--arg direction "$(config_get direction)" \
+		'$extra + {
+			product_id: $product_id,
+			product_name: $product_name,
+			two_ways: $two_ways,
+			direction: $direction
+		}'
+}
+
+_shop_need_captcha() {
+	_portal_fetch_captcha || true
+	_shop_json '{"ok":false,"need_captcha":true,"msg":"订购/续费需要网站验证码"}'
+}
+
+_ensure_portal() {
+	local code="$1"
+	_portal_probe
+	if [ "$portal_logged_in" = 1 ]; then
+		_portal_save_user_fields
+		return 0
+	fi
+	if [ -z "$code" ]; then
+		return 2
+	fi
+	if _portal_login "$code"; then
+		_portal_probe
+		if [ "$portal_logged_in" = 1 ]; then
+			_portal_save_user_fields
+			return 0
+		fi
+	fi
+	return 2
+}
+
+_shop_parse_catalog() {
+	awk '
+		$0 ~ /<h3[^>]*class="[^"]*title/ {
+			line=$0
+			sub(/.*<h3[^>]*>/, "", line)
+			sub(/<\/h3>.*/, "", line)
+			gsub(/<[^>]+>/, "", line)
+			gsub(/^[ \t]+|[ \t]+$/, "", line)
+			title=line
+		}
+		$0 ~ /<span[^>]*class="[^"]*price/ {
+			line=$0
+			sub(/.*<span[^>]*>/, "", line)
+			sub(/<\/span>.*/, "", line)
+			gsub(/<[^>]+>/, "", line)
+			gsub(/^[ \t]+|[ \t]+$/, "", line)
+			price=line
+		}
+		$0 ~ /onclick="dobuy\(/ {
+			line=$0
+			sub(/.*onclick="dobuy\(/, "", line)
+			sub(/,.*/, "", line)
+			gsub(/[^0-9]/, "", line)
+			if (title != "" && line ~ /^[0-9]+$/)
+				print title "\t" price "\t" line
+		}
+	' "$1"
+}
+
+_shop_catalog_cmd() {
+	local code="$1" rc items
+	_apply_uci_overrides
+	_maybe_reset_on_account_change
+	if [ -z "$(config_get username)" ] || [ -z "$(config_get password)" ]; then
+		_shop_json '{"ok":false,"need_captcha":false,"msg":"请先登录加速账号"}'
+		return 0
+	fi
+	_ensure_portal "$code"
+	rc=$?
+	if [ "$rc" = 2 ]; then
+		_shop_need_captcha
+		return 0
+	fi
+	if [ "$rc" != 0 ]; then
+		_shop_json "$(jq -n --arg msg "${portal_login_msg:-网站登录失败}" '{ok:false,need_captcha:true,msg:$msg}')"
+		return 0
+	fi
+	_portal_curl "${portal_url}/index/user/product" \
+		-H 'accept: text/html,application/xhtml+xml' \
+		--location \
+		-o "$PORTAL_USER_HTML" >/dev/null 2>&1 || true
+	items=$(_shop_parse_catalog "$PORTAL_USER_HTML" | jq -Rsc '
+		split("\n") | map(select(length>0)) | map(split("\t")) |
+		map(select(length>=3)) | map({name:.[0], price:.[1], id:.[2]})
+	')
+	rm -f "$PORTAL_USER_HTML"
+	[ -n "$items" ] || items='[]'
+	_shop_json "$(jq -n --argjson items "$items" '{ok:true,need_captcha:false,msg:"",items:$items}')"
+}
+
+_shop_pay_post() {
+	local product_id="$1" month="$2"
+	_portal_curl "${portal_url}/index/index/dobuy_wx.html" \
+		-H 'accept: application/json, text/javascript, */*; q=0.01' \
+		-H 'x-requested-with: XMLHttpRequest' \
+		-H 'content-type: application/x-www-form-urlencoded; charset=UTF-8' \
+		-H "origin: ${portal_url}" \
+		-H "referer: ${portal_url}/index/user/product" \
+		--data-urlencode "product_id=${product_id}" \
+		--data-urlencode "month=${month}" \
+		--data-urlencode "country_id=0" \
+		--data-urlencode "area_id=0"
+}
+
+_shop_pay_result() {
+	local resp="$1" product_id="$2" month="$3" status pay_url pmsg extra
+	if ! echo "$resp" | jq -e . >/dev/null 2>&1; then
+		_shop_json '{"ok":false,"need_captcha":false,"msg":"下单失败"}'
+		return 0
+	fi
+	status=$(echo "$resp" | jq -r '.status // empty' 2>/dev/null)
+	pmsg=$(echo "$resp" | jq -r '.resMessage // .msg // empty' 2>/dev/null)
+	case "$status" in
+		2)
+			pay_url="${portal_url}/index/index/dobuy_aliapy.html?product_id=${product_id}&month=${month}"
+			extra=$(jq -n --arg url "$pay_url" --arg msg "请在新窗口完成支付宝支付" \
+				'{ok:true,need_captcha:false,pay_url:$url,msg:$msg}')
+			;;
+		3)
+			pay_url=$(echo "$resp" | jq -r '.data // empty' 2>/dev/null)
+			if [ -z "$pay_url" ]; then
+				extra=$(jq -n --arg msg "${pmsg:-未返回支付地址}" '{ok:false,need_captcha:false,msg:$msg}')
+			else
+				extra=$(jq -n --arg url "$pay_url" --arg msg "请在新窗口完成支付" \
+					'{ok:true,need_captcha:false,pay_url:$url,msg:$msg}')
+			fi
+			;;
+		1)
+			pay_url="${portal_url}/index/index/dobuy_aliapy.html?product_id=${product_id}&month=${month}"
+			extra=$(jq -n --arg url "$pay_url" --arg msg "路由器页不支持微信支付，请用支付宝完成" \
+				'{ok:true,need_captcha:false,pay_url:$url,msg:$msg}')
+			;;
+		*)
+			extra=$(jq -n --arg msg "${pmsg:-下单失败}" '{ok:false,need_captcha:false,msg:$msg}')
+			;;
+	esac
+	_shop_json "$extra"
+}
+
+_shop_buy_cmd() {
+	local product_id="$1" month="$2" code="$3" rc resp
+	_apply_uci_overrides
+	_maybe_reset_on_account_change
+	case "$product_id" in
+		*[!0-9]* | "") _shop_json '{"ok":false,"msg":"套餐参数无效"}'; return 1 ;;
+	esac
+	case "$month" in
+		[1-9] | 1[0-2]) ;;
+		*) month=1 ;;
+	esac
+	_ensure_portal "$code"
+	rc=$?
+	if [ "$rc" = 2 ]; then
+		_shop_need_captcha
+		return 0
+	fi
+	[ "$rc" = 0 ] || return 0
+	resp=$(_shop_pay_post "$product_id" "$month")
+	_shop_pay_result "$resp" "$product_id" "$month"
+}
+
+_shop_renew_cmd() {
+	local month="$1" code="$2" pid resp
+	_apply_uci_overrides
+	_maybe_reset_on_account_change
+	_ensure_portal "$code"
+	case $? in
+		2) _shop_need_captcha; return 0 ;;
+		0) ;;
+		*) return 0 ;;
+	esac
+	pid=$(config_get product_id)
+	if [ -z "$pid" ]; then
+		_shop_json '{"ok":false,"msg":"当前账号没有可续费套餐，请先订购"}'
+		return 0
+	fi
+	case "$month" in
+		[1-9] | 1[0-2]) ;;
+		*) month=1 ;;
+	esac
+	resp=$(_shop_pay_post "$pid" "$month")
+	_shop_pay_result "$resp" "$pid" "$month"
+}
+
+_shop_status_cmd() {
+	_apply_uci_overrides
+	_maybe_reset_on_account_change
+	_shop_json '{"ok":true,"need_captcha":false,"msg":""}'
+}
+
 _json_escape() {
 	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g'
 }
@@ -1218,10 +1784,12 @@ _json_escape() {
 _write_status() {
 	_status_dir
 	_apply_uci_overrides
+	_maybe_reset_on_account_change
 	local enable username description login_status tunnelall dnsleak
 	local connected=0 handshake=0 rx=0 tx=0 private_ip="" iface=""
 	local want=0 split=1 killswitch=0 block_reason="" expired_text=""
 	local hs now login_pending=0 login_result_json="null"
+	local two_ways_json=false direction="" product_name="" product_id=""
 
 	enable=$(config_get enable)
 	username=$(config_get username)
@@ -1229,6 +1797,14 @@ _write_status() {
 	login_status=$(config_get login_status)
 	tunnelall=$(config_get tunnelall)
 	dnsleak=$(config_get dnsleak)
+	product_name=$(config_get product_name)
+	product_id=$(config_get product_id)
+	case "$(config_get two_ways)" in
+		1)
+			two_ways_json=true
+			direction=$(config_get direction)
+			;;
+	esac
 	iface=$(config_get vpname)
 	[ -z "$iface" ] && iface="$vpname"
 	[ "$enable" = "1" ] && want=1
@@ -1263,16 +1839,20 @@ _write_status() {
 	fi
 
 	cat > /var/run/gogogo/status.json <<EOF
-{"ok":true,"enable":$want,"want":$want,"connected":$connected,"handshake":$handshake,"split":$split,"killswitch":$killswitch,"account":"$(_json_escape "$username")","login_account":"$(_json_escape "$username")","description":"$(_json_escape "$description")","expired_text":"$(_json_escape "$expired_text")","login_status":$([ -n "$login_status" ] && echo "$login_status" || echo 0),"block_reason":"$(_json_escape "$block_reason")","iface":"$(_json_escape "$iface")","private_ip":"$(_json_escape "$private_ip")","rx":${rx:-0},"tx":${tx:-0},"region":"assigned","live_region":"$([ "$connected" = 1 ] && echo assigned || echo)","login_pending":$login_pending,"login_result":$login_result_json}
+{"ok":true,"enable":$want,"want":$want,"connected":$connected,"handshake":$handshake,"split":$split,"killswitch":$killswitch,"account":"$(_json_escape "$username")","login_account":"$(_json_escape "$username")","description":"$(_json_escape "$description")","expired_text":"$(_json_escape "$expired_text")","login_status":$([ -n "$login_status" ] && echo "$login_status" || echo 0),"block_reason":"$(_json_escape "$block_reason")","iface":"$(_json_escape "$iface")","private_ip":"$(_json_escape "$private_ip")","rx":${rx:-0},"tx":${tx:-0},"region":"assigned","live_region":"$([ "$connected" = 1 ] && echo assigned || echo)","two_ways":$two_ways_json,"direction":"$(_json_escape "$direction")","product_id":"$(_json_escape "$product_id")","product_name":"$(_json_escape "$product_name")","login_pending":$login_pending,"login_result":$login_result_json}
 EOF
 	cat /var/run/gogogo/status.json
 }
 
 _login_job() {
 	_status_dir
+	_apply_uci_overrides
+	_maybe_reset_on_account_change
 	date +%s > /var/run/gogogo/login.job
 	rm -f /var/run/gogogo/login.result
 	if _check_user_core; then
+		uci set "${CPE_UCI}.@default[0].last_username=$(config_get username)"
+		uci commit "$CPE_UCI"
 		printf '{"ok":true,"msg":"登录成功","account":"%s"}\n' "$(_json_escape "$(config_get username)")" > /var/run/gogogo/login.result
 		_write_status >/dev/null
 	else
@@ -1286,6 +1866,7 @@ _connect_now() {
 	uci set "${CPE_UCI}.@default[0].enable=1"
 	uci commit "$CPE_UCI"
 	_apply_uci_overrides
+	_maybe_reset_on_account_change
 	_check_config
 	_write_status >/dev/null
 }
@@ -1383,6 +1964,32 @@ case "$action" in
 		;;
 	status)
 		_write_status
+		;;
+	direction_status)
+		_maybe_reset_on_account_change
+		_direction_status
+		;;
+	set_direction)
+		_maybe_reset_on_account_change
+		_set_direction "$2" "$3"
+		;;
+	portal_captcha)
+		_portal_captcha_cmd
+		;;
+	reset_exit)
+		_reset_exit_cmd
+		;;
+	shop_status)
+		_shop_status_cmd
+		;;
+	shop_catalog)
+		_shop_catalog_cmd "$2"
+		;;
+	shop_buy)
+		_shop_buy_cmd "$2" "$3" "$4"
+		;;
+	shop_renew)
+		_shop_renew_cmd "$2" "$3"
 		;;
 	login)
 		_login_job

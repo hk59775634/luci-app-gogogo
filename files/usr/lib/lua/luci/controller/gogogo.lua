@@ -16,6 +16,13 @@ function index()
 	entry({"admin", "gogogo", "disconnect"}, call("action_disconnect")).leaf = true
 	entry({"admin", "gogogo", "save"}, call("action_save")).leaf = true
 	entry({"admin", "gogogo", "refresh_account"}, call("action_refresh_account")).leaf = true
+	entry({"admin", "gogogo", "direction_status"}, call("action_direction_status")).leaf = true
+	entry({"admin", "gogogo", "set_direction"}, call("action_set_direction")).leaf = true
+	entry({"admin", "gogogo", "portal_captcha"}, call("action_portal_captcha")).leaf = true
+	entry({"admin", "gogogo", "shop_status"}, call("action_shop_status")).leaf = true
+	entry({"admin", "gogogo", "shop_catalog"}, call("action_shop_catalog")).leaf = true
+	entry({"admin", "gogogo", "shop_buy"}, call("action_shop_buy")).leaf = true
+	entry({"admin", "gogogo", "shop_renew"}, call("action_shop_renew")).leaf = true
 	entry({"admin", "gogogo", "diag_start"}, call("action_diag_start")).leaf = true
 	entry({"admin", "gogogo", "diag_poll"}, call("action_diag_poll")).leaf = true
 end
@@ -57,10 +64,57 @@ local function valid_password(p)
 	return nil
 end
 
+local function uci_get(opt)
+	return scrub(sys.exec("uci -q get gogogo.@default[0]." .. opt) or "")
+end
+
+local function reset_exit_if_changed(old_account, account)
+	if not account or account == "" then
+		return
+	end
+	old_account = scrub(old_account)
+	if old_account ~= "" and account ~= old_account then
+		sys.call("/usr/sbin/gogogo reset_exit >/dev/null 2>&1")
+	end
+end
+
 local function valid_flag(v)
 	v = scrub(v)
 	if v == "1" or v == "0" then
 		return v
+	end
+	return nil
+end
+
+local function valid_direction(v)
+	v = scrub(v)
+	if v == "us" or v == "hk" then
+		return v
+	end
+	return nil
+end
+
+local function valid_captcha(v)
+	v = scrub(v)
+	if v:match("^[%w]+$") and #v >= 3 and #v <= 8 then
+		return v
+	end
+	return nil
+end
+
+local function valid_product_id(v)
+	v = scrub(v)
+	if v:match("^[0-9]+$") and #v <= 12 then
+		return v
+	end
+	return nil
+end
+
+local function valid_month(v)
+	v = scrub(v)
+	local n = tonumber(v)
+	if n and n >= 1 and n <= 12 then
+		return tostring(n)
 	end
 	return nil
 end
@@ -129,9 +183,11 @@ function action_save()
 	local enable = valid_flag(http.formvalue("enable") or "")
 	local split = valid_flag(http.formvalue("split") or "")
 	local killswitch = valid_flag(http.formvalue("killswitch") or "")
+	local old_account = uci_get("username")
 
 	if account then
 		uci_set("username", account)
+		reset_exit_if_changed(old_account, account)
 	end
 	if password then
 		uci_set("password", password)
@@ -157,9 +213,11 @@ function action_login()
 	local account = valid_account(http.formvalue("account"))
 	local password = valid_password(http.formvalue("password"))
 	local enable = valid_flag(http.formvalue("enable") or "")
+	local old_account = uci_get("username")
 
 	if account then
 		uci_set("username", account)
+		reset_exit_if_changed(old_account, account)
 	end
 	if password then
 		uci_set("password", password)
@@ -185,9 +243,11 @@ function action_connect()
 	local password = valid_password(http.formvalue("password"))
 	local split = valid_flag(http.formvalue("split") or "")
 	local killswitch = valid_flag(http.formvalue("killswitch") or "")
+	local old_account = uci_get("username")
 
 	if account then
 		uci_set("username", account)
+		reset_exit_if_changed(old_account, account)
 	end
 	if password then
 		uci_set("password", password)
@@ -249,4 +309,89 @@ end
 function action_refresh_account()
 	http.prepare_content("application/json")
 	http.write_json(run_json("/usr/sbin/gogogo refresh_account"))
+end
+
+function action_direction_status()
+	http.prepare_content("application/json")
+	http.write_json(run_json("/usr/sbin/gogogo direction_status"))
+end
+
+function action_set_direction()
+	local dir = valid_direction(http.formvalue("direction"))
+	local code = valid_captcha(http.formvalue("code") or "")
+	http.prepare_content("application/json")
+	if not dir then
+		http.write_json({ ok = false, msg = "线路参数无效" })
+		return
+	end
+	local cmd = "/usr/sbin/gogogo set_direction " .. sh_quote(dir)
+	if code then
+		cmd = cmd .. " " .. sh_quote(code)
+	end
+	http.write_json(run_json(cmd))
+end
+
+function action_portal_captcha()
+	os.execute("/usr/sbin/gogogo portal_captcha >/dev/null 2>&1")
+	local f = io.open("/var/run/gogogo/portal_captcha.png", "r")
+	if not f then
+		http.status(404, "Not Found")
+		http.prepare_content("application/json")
+		http.write_json({ ok = false, msg = "验证码获取失败" })
+		return
+	end
+	local data = f:read("*a") or ""
+	f:close()
+	if data == "" then
+		http.status(404, "Not Found")
+		http.prepare_content("application/json")
+		http.write_json({ ok = false, msg = "验证码获取失败" })
+		return
+	end
+	http.header("Cache-Control", "no-store, no-cache")
+	http.header("Pragma", "no-cache")
+	http.prepare_content("image/png")
+	http.write(data)
+end
+
+function action_shop_status()
+	http.prepare_content("application/json")
+	http.write_json(run_json("/usr/sbin/gogogo shop_status"))
+end
+
+function action_shop_catalog()
+	local code = valid_captcha(http.formvalue("code") or "")
+	local cmd = "/usr/sbin/gogogo shop_catalog"
+	if code then
+		cmd = cmd .. " " .. sh_quote(code)
+	end
+	http.prepare_content("application/json")
+	http.write_json(run_json(cmd))
+end
+
+function action_shop_buy()
+	local pid = valid_product_id(http.formvalue("product_id"))
+	local month = valid_month(http.formvalue("month") or "1") or "1"
+	local code = valid_captcha(http.formvalue("code") or "")
+	http.prepare_content("application/json")
+	if not pid then
+		http.write_json({ ok = false, msg = "套餐参数无效" })
+		return
+	end
+	local cmd = "/usr/sbin/gogogo shop_buy " .. sh_quote(pid) .. " " .. sh_quote(month)
+	if code then
+		cmd = cmd .. " " .. sh_quote(code)
+	end
+	http.write_json(run_json(cmd))
+end
+
+function action_shop_renew()
+	local month = valid_month(http.formvalue("month") or "1") or "1"
+	local code = valid_captcha(http.formvalue("code") or "")
+	local cmd = "/usr/sbin/gogogo shop_renew " .. sh_quote(month)
+	if code then
+		cmd = cmd .. " " .. sh_quote(code)
+	end
+	http.prepare_content("application/json")
+	http.write_json(run_json(cmd))
 end

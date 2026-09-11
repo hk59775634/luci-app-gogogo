@@ -41,6 +41,7 @@ define Build/Prepare
 		s|@CPE_DNS_HIJACK_TO@|$(CPE_DNS_HIJACK_TO)|g; \
 		s|@CPE_DEFAULT_URL@|$(CPE_DEFAULT_URL)|g; \
 		s|@CPE_API_USER_PATH@|$(CPE_API_USER_PATH)|g; \
+		s|@CPE_PORTAL_URL@|$(if $(CPE_PORTAL_URL),$(CPE_PORTAL_URL),https://www.gogogofuture.com)|g; \
 		s|@CPE_DNS_LOCAL_1@|$(CPE_DNS_LOCAL_1)|g; \
 		s|@CPE_DNS_REMOTE_1@|$(CPE_DNS_REMOTE_1)|g; \
 		s|@CPE_DNS_PROBE_DOMAIN@|$(CPE_DNS_PROBE_DOMAIN)|g; \
