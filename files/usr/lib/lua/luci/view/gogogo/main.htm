@@ -31,6 +31,7 @@
 	#gogogo-app .nsc-msg--ok { color: var(--nros-success, #2a2); }
 	#gogogo-app .nsc-msg--err { color: var(--nros-danger, #c00); }
 	#gogogo-app .nsc-actions { display: flex; flex-wrap: wrap; gap: .5em; margin-top: .8em; }
+	#gogogo-app #nsc-register[hidden] { display: none !important; }
 	#gogogo-app .nsc-meta,
 	#gogogo-app .nsc-hint { color: var(--nros-text-3, #888); font-size: 85%; }
 	#gogogo-app .nsc-hint { margin-top: 4px; }
@@ -188,6 +189,7 @@
 				</div>
 				<div class="nsc-actions">
 					<input type="button" class="nros-btn nros-btn--primary" id="nsc-login" value="登录" />
+					<a class="nros-btn" id="nsc-register" href="<%=register_url or 'https://www.gogogofuture.com/register'%>" target="_blank" rel="noopener noreferrer">注册</a>
 					<input type="button" class="nros-btn" id="nsc-refresh-account" value="刷新到期时间" />
 				</div>
 				<div class="nsc-toggle">
@@ -770,6 +772,8 @@
 		renderShop(st);
 		renderDir(st);
 		renderConn(st);
+		var reg = $('nsc-register');
+		if (reg) reg.hidden = !!acc;
 	}
 
 	function scrub(s) {

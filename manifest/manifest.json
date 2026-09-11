@@ -1,25 +1,25 @@
 {
-  "tag": "v1.0.5",
-  "version": "1.0.5",
-  "notes": "## 供创未来 1.0.5\n\n- 客户端 `2026091105`：VPN 三步连接（登录 → 获取出口 → 连接）\n- 登录后即可选择美国 / 香港；确认是单出口后只保留平台已分配线路，不再把多出口误判成「平台分配」\n- 换号清空上一账号线路与网站会话；VPN 页支持订购 / 续费（支付宝）\n- 固件含 luci-theme-gogogo 1.0.5 与 luci-app-gogogo 2026091105\n",
+  "tag": "v1.0.6",
+  "version": "1.0.6",
+  "notes": "## 供创未来 1.0.6\n\n- 客户端 `2026091106`：未登录 VPN 账号时显示「注册」，新标签页打开官网注册页\n- 固件含 luci-theme-gogogo 1.0.6 与 luci-app-gogogo 2026091106\n",
   "gogogo": {
-    "version": "2026091105",
-    "filename": "luci-app-gogogo_2026091105_all.ipk",
-    "size": 96811,
-    "sha256": "d7fcf67421e8ff25517b02252698e935b4e8489c7e1c21c8bfe34e1123ec9be3"
+    "version": "2026091106",
+    "filename": "luci-app-gogogo_2026091106_all.ipk",
+    "size": 97046,
+    "sha256": "496cfec7eb7b49559f4f82f2b7f57128f01d144bee67f8e33c342337a9db2d7f"
   },
   "firmware": {
-    "version": "1.0.5",
+    "version": "1.0.6",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-sysupgrade.bin",
     "size": 17531698,
-    "sha256": "86e1a306421a12acea2efc616dc5c0aa252ad8b1960767efcd2b98979219b372"
+    "sha256": "647e9f9be22ee976b82049d74ecd026a9a0a9096fb3b3285c4e119e2af5e2e4f"
   },
   "factory": {
-    "version": "1.0.5",
+    "version": "1.0.6",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-factory.bin",
     "size": 19136512,
-    "sha256": "d49037898b86efef032fbdad884315ac31d1ec6350f7dc05bc014bfdd7ad6104"
+    "sha256": "004a788c6fe93cf941e44a3efe8c483a6ed8fd32f2417ecfd6213b205a2ae826"
   }
 }

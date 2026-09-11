@@ -156,6 +156,22 @@ local function read_status_cache_json()
 	return "{}"
 end
 
+local function portal_register_url()
+	local portal = "https://www.gogogofuture.com"
+	local f = io.open("/usr/share/gogogo/defaults.sh", "r")
+	if f then
+		for line in f:lines() do
+			local v = line:match("^CPE_PORTAL_URL='([^']*)'")
+			if v and v ~= "" then
+				portal = v
+				break
+			end
+		end
+		f:close()
+	end
+	return portal:gsub("/+$", "") .. "/register"
+end
+
 function action_index()
 	local query_url = http.formvalue("url")
 	if query_url and query_url ~= "" then
@@ -168,7 +184,8 @@ function action_index()
 	end
 	sys.call("/usr/sbin/gogogo-cred sync >/dev/null 2>&1 &")
 	luci.template.render("gogogo/main", {
-		status_cache_json = read_status_cache_json()
+		status_cache_json = read_status_cache_json(),
+		register_url = portal_register_url()
 	})
 end
 
