@@ -3,7 +3,15 @@
 -%>
 <%+header%>
 
-<h2 name="content">连接诊断</h2>
+<div class="nros-page-head">
+	<div>
+		<h1 class="nros-title" name="content">连接诊断</h1>
+		<p class="nros-subtitle">检测账号、网络与加速服务是否正常。</p>
+	</div>
+	<div class="cpe-diag-actions" style="margin:0">
+		<a class="nros-btn" href="<%=luci.dispatcher.build_url("admin", "gogogo", "config")%>">返回</a>
+	</div>
+</div>
 
 <style type="text/css">
 .cpe-diag-faults {
@@ -172,7 +180,6 @@
 
 		lines.push('======== 跨境加速连接诊断报告 ========');
 		lines.push('复制时间：' + ts);
-		if (data.zt_node_id) lines.push('设备 ID：' + data.zt_node_id);
 		if (data.device_sn) lines.push('出厂 SN：' + data.device_sn);
 		lines.push('诊断状态：已完成');
 		if (data.vpn_healthy)
@@ -375,7 +382,7 @@
 			state: 'idle',
 			vpn_healthy: false,
 			progress: 0,
-			progress_total: 27,
+			progress_total: 26,
 			progress_pct: 0,
 			faults: [],
 			steps: []
@@ -400,6 +407,7 @@
 		value="开始诊断" onclick="cpeDiagStart();" />
 	<input type="button" id="cpe_diag_copy_btn" class="cbi-button cpe-diag-btn"
 		value="复制诊断结果" onclick="cpeDiagCopy();" disabled="disabled" />
+	<a class="cbi-button cpe-diag-btn" href="<%=luci.dispatcher.build_url("admin", "gogogo", "config")%>">返回</a>
 	<span id="cpe_diag_copy_tip" class="cpe-diag-copy-tip"></span>
 </p>
 

@@ -98,7 +98,7 @@
 	<div class="nros-page-head">
 		<div>
 			<h1 class="nros-title" name="content">跨境加速</h1>
-			<p class="nros-subtitle">登录供创未来账号后连接平台分配的加速节点。分流：国内走本地网络，海外走隧道。全局：全部公网走隧道。</p>
+			<p class="nros-subtitle">登录供创未来账号后连接平台分配的加速服务。分流：国内走本地网络，海外走隧道。全局：全部公网走隧道。</p>
 		</div>
 		<div class="nsc-actions" style="margin-top:0">
 			<input type="button" class="nros-btn" id="nsc-guide-start" value="使用引导" />
@@ -167,13 +167,13 @@
 		<section class="nros-card" id="nsc-card-exits">
 			<div class="nros-card__hd">
 				<div>
-					<div class="nros-section-title">加速节点</div>
-					<div class="nsc-step-label">第 2 步 · 连接平台节点</div>
+					<div class="nros-section-title">连接</div>
+					<div class="nsc-step-label">第 2 步 · 接入加速服务</div>
 				</div>
 			</div>
 			<div class="nros-card__bd">
-				<div id="nsc-empty" class="nsc-meta">登录后显示平台分配的节点…</div>
-				<ul class="nsc-exits" id="nsc-list" style="display:none"></ul>
+				<p class="nsc-hint" style="margin:0 0 .8em">出口由平台按账号分配，本机无需选择节点。</p>
+				<div id="nsc-conn-state" class="nsc-meta">登录后可连接</div>
 				<div class="nsc-actions">
 					<input type="button" class="nros-btn nros-btn--primary" id="nsc-connect" value="连接" />
 					<input type="button" class="nros-btn" id="nsc-disconnect" value="断开" />
@@ -216,13 +216,13 @@
 			target: 'nsc-card-account',
 			kicker: '两步连接  1 / 2',
 			title: '先登录账号',
-			body: '填写供创未来平台账号和密码，点「登录」。登录成功后会显示到期时间和平台分配的加速节点。已保存过密码则可留空。'
+			body: '填写供创未来平台账号和密码，点「登录」。登录成功后会显示到期时间。已保存过密码则可留空。'
 		},
 		{
 			target: 'nsc-card-exits',
 			kicker: '两步连接  2 / 2',
-			title: '再连接节点',
-			body: '节点由平台按账号分配，无需自选区域。点「连接」建立隧道。也可以打开「开机连接」，WAN 就绪后自动接入。'
+			title: '再连接加速服务',
+			body: '出口由平台按账号分配，无需选择节点。点「连接」建立隧道。也可以打开「开机连接」，WAN 就绪后自动接入。'
 		}
 	];
 	var guideStep = -1;
@@ -274,34 +274,24 @@
 			connBtn.value = '连接';
 	}
 
-	function renderNodes(st) {
-		var list = $('nsc-list');
-		var empty = $('nsc-empty');
-		var nodes = (st && st.nodes) || [];
-		list.innerHTML = '';
-		if (!nodes.length && !(st && (st.account || st.expired_text))) {
-			list.style.display = 'none';
-			empty.style.display = '';
-			empty.textContent = '登录后显示平台分配的节点…';
+	function renderConn(st) {
+		var el = $('nsc-conn-state');
+		if (!el) {
 			updateButtons();
 			return;
 		}
-		empty.style.display = 'none';
-		list.style.display = '';
-		var n = nodes[0] || { name: '平台分配节点', endpoint: st && st.endpoint };
-		var li = document.createElement('li');
 		var on = !!(st && st.connected);
 		var wait = !!(st && st.connected && !st.handshake);
-		if (on || connecting) li.className = 'nsc-on';
-		var badge = '';
-		if (connecting) badge = '<span class="nsc-badge nsc-badge-wait">连接中</span>';
-		else if (on && wait) badge = '<span class="nsc-badge nsc-badge-wait">握手中</span>';
-		else if (on) badge = '<span class="nsc-badge">当前</span>';
-		li.innerHTML =
-			'<span class="nsc-name">' + esc(n.name || '平台分配节点') + '</span>' +
-			(n.endpoint ? '<span class="nsc-meta">' + esc(n.endpoint) + '</span>' : '') +
-			badge;
-		list.appendChild(li);
+		if (connecting)
+			el.textContent = '正在连接平台分配的加速服务…';
+		else if (on && wait)
+			el.textContent = '已接入，等待握手';
+		else if (on)
+			el.textContent = '已接入平台分配的加速服务';
+		else if (st && (st.account || st.expired_text))
+			el.textContent = '已登录，可连接';
+		else
+			el.textContent = '登录后可连接';
 		updateButtons();
 	}
 
@@ -343,7 +333,6 @@
 			row('节点', '平台分配') +
 			row('模式', asBool(st.split) ? '分流（国内直连）' : '全局') +
 			row('防 DNS 泄露', asBool(st.killswitch) ? '已开启' : '关闭') +
-			row('端点', st.endpoint || '') +
 			row('到期', st.expired_text || st.description || '') +
 			row('流量', traffic) +
 			'</div>';
@@ -355,7 +344,7 @@
 		$('nsc-enable').checked = asBool(st.enable) || asBool(st.want);
 		if ($('nsc-split')) $('nsc-split').checked = asBool(st.split) || st.split === undefined;
 		if ($('nsc-killswitch')) $('nsc-killswitch').checked = asBool(st.killswitch);
-		renderNodes(st);
+		renderConn(st);
 	}
 
 	function scrub(s) {

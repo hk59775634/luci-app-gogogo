@@ -485,13 +485,13 @@ _vpn_stack_blocked() {
 }
 
 _skip_vpn_steps() {
-	echo "cped|VPN 看门狗（gogogod）|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
+	echo "cped|VPN 看门狗|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
 	echo "cpe_main|VPN 主进程|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
 	echo "chnroutes_file|国内路由表文件|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
 	echo "chnroutes_fmt|国内路由表格式|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
 	echo "chnroutes_data|国内路由表数据|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
-	echo "wg_iface|WireGuard VPN 接口|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
-	echo "wg_hs|WireGuard 握手|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
+	echo "wg_iface|VPN 接口|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
+	echo "wg_hs|VPN 握手|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
 	echo "vpn_traffic|VPN 隧道通讯|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
 	echo "dnsmasq_vpn|VPN DNS 配置（dnsmasq）|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
 	echo "vpn_dns_upstream|VPN 通道 DNS 解析|skip|VPN 未启用，跳过|" >>"$STEP_FILE"
@@ -500,13 +500,13 @@ _skip_vpn_steps() {
 
 _block_vpn_downstream_steps() {
 	local reason="${1:-账号鉴权未通过，跳过}"
-	echo "cped|VPN 看门狗（gogogod）|skip|${reason}|" >>"$STEP_FILE"
+	echo "cped|VPN 看门狗|skip|${reason}|" >>"$STEP_FILE"
 	echo "cpe_main|VPN 主进程|skip|${reason}|" >>"$STEP_FILE"
 	echo "chnroutes_file|国内路由表文件|skip|${reason}|" >>"$STEP_FILE"
 	echo "chnroutes_fmt|国内路由表格式|skip|${reason}|" >>"$STEP_FILE"
 	echo "chnroutes_data|国内路由表数据|skip|${reason}|" >>"$STEP_FILE"
-	echo "wg_iface|WireGuard VPN 接口|skip|${reason}|" >>"$STEP_FILE"
-	echo "wg_hs|WireGuard 握手|skip|${reason}|" >>"$STEP_FILE"
+	echo "wg_iface|VPN 接口|skip|${reason}|" >>"$STEP_FILE"
+	echo "wg_hs|VPN 握手|skip|${reason}|" >>"$STEP_FILE"
 	echo "vpn_traffic|VPN 隧道通讯|skip|${reason}|" >>"$STEP_FILE"
 	echo "dnsmasq_vpn|VPN DNS 配置（dnsmasq）|skip|${reason}|" >>"$STEP_FILE"
 	echo "vpn_dns_upstream|VPN 通道 DNS 解析|skip|${reason}|" >>"$STEP_FILE"
@@ -523,8 +523,7 @@ _run_diag() {
 	VPN_HEALTHY="false"
 	ACCOUNT_AUTH_ST=""
 	DIAG_STEP_IDX=0
-	DIAG_STEP_TOTAL=27
-	ZT_ID=$(_zt_node_id); ZT_ID=${ZT_ID:-}
+	DIAG_STEP_TOTAL=26
 	DEV_SN=$(_device_sn); DEV_SN=${DEV_SN:-}
 
 	: >"$STEP_FILE"
@@ -629,12 +628,7 @@ _run_diag() {
 	_step_running cloud_url "云端 API 配置"
 	url=$(/usr/sbin/gogogo-url get 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 	if [ -n "$url" ]; then
-		brand=$(_brand_from_url "$url")
-		if [ -n "$brand" ]; then
-			_step_end cloud_url "云端 API 配置" ok "已配置 (${brand})" ""
-		else
-			_step_end cloud_url "云端 API 配置" ok "已配置" ""
-		fi
+		_step_end cloud_url "云端 API 配置" ok "已配置" ""
 	else
 		_step_end cloud_url "云端 API 配置" fail "未配置" "未配置云端 API，无法鉴权与连接 VPN"
 	fi
@@ -656,18 +650,18 @@ _run_diag() {
 	elif _vpn_stack_blocked; then
 		_block_vpn_downstream_steps "账号鉴权未通过，跳过"
 	else
-		_step_running cped "VPN 看门狗（gogogod）"
+		_step_running cped "VPN 看门狗"
 		if _gogogo_cped_alive; then
-			_step_end cped "VPN 看门狗（gogogod）" ok "cped 正在运行" ""
+			_step_end cped "VPN 看门狗" ok "正在运行" ""
 		else
-			_step_end cped "VPN 看门狗（gogogod）" fail "cped 未运行" "VPN 看门狗未运行"
+			_step_end cped "VPN 看门狗" fail "未运行" "VPN 看门狗未运行"
 		fi
 
 		_step_running cpe_main "VPN 主进程"
 		if _gogogo_main_alive; then
-			_step_end cpe_main "VPN 主进程" ok "cpe 主循环正在运行" ""
+			_step_end cpe_main "VPN 主进程" ok "cpe 正在运行" ""
 		else
-			_step_end cpe_main "VPN 主进程" fail "cpe 主循环未运行" "VPN 主进程未运行，VPN 接口可能无法创建"
+			_step_end cpe_main "VPN 主进程" fail "cpe 未运行" "VPN 主进程未运行，VPN 接口可能无法创建"
 		fi
 
 		_step_running chnroutes_file "国内路由表文件"
@@ -705,18 +699,18 @@ _run_diag() {
 		fi
 
 		vp=$(_vpname)
-		_step_running wg_iface "WireGuard VPN 接口"
+		_step_running wg_iface "VPN 接口"
 		if ip link show "$vp" >/dev/null 2>&1; then
-			_step_end wg_iface "WireGuard VPN 接口" ok "接口 ${vp} 已创建" ""
+			_step_end wg_iface "VPN 接口" ok "接口 ${vp} 已创建" ""
 		else
-			_step_end wg_iface "WireGuard VPN 接口" fail "接口未创建" "WireGuard VPN 接口未创建"
+			_step_end wg_iface "VPN 接口" fail "接口未创建" "VPN 接口未创建"
 		fi
 
-		_step_running wg_hs "WireGuard 握手"
+		_step_running wg_hs "VPN 握手"
 		if _wg_handshake_ok; then
-			_step_end wg_hs "WireGuard 握手" ok "与服务器握手正常" ""
+			_step_end wg_hs "VPN 握手" ok "与服务器握手正常" ""
 		else
-			_step_end wg_hs "WireGuard 握手" fail "握手失败或已过期" "WireGuard 未建立有效握手"
+			_step_end wg_hs "VPN 握手" fail "握手失败或已过期" "VPN 未建立有效握手"
 		fi
 
 		_step_running vpn_traffic "VPN 隧道通讯"
@@ -757,13 +751,6 @@ _run_diag() {
 				_step_end vpn_dns_upstream "VPN 通道 DNS 解析" fail "VPN DNS 上游无响应（已重试 ${DIAG_NET_RETRY_MAX} 次）" "VPN 通道 DNS 服务器异常"
 			fi
 		fi
-	fi
-
-	_step_running device_id "设备 ID"
-	if [ -n "$ZT_ID" ]; then
-		_step_end device_id "设备 ID" ok "$ZT_ID" ""
-	else
-		_step_end device_id "设备 ID" warn "暂不可用" ""
 	fi
 
 	_step_running device_sn "出厂序列号（SN）"

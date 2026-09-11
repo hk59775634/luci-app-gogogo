@@ -1219,9 +1219,9 @@ _write_status() {
 	_status_dir
 	_apply_uci_overrides
 	local enable username description login_status tunnelall dnsleak
-	local connected=0 handshake=0 rx=0 tx=0 endpoint="" private_ip="" iface=""
+	local connected=0 handshake=0 rx=0 tx=0 private_ip="" iface=""
 	local want=0 split=1 killswitch=0 block_reason="" expired_text=""
-	local hs now node_name node_ep login_pending=0 login_result_json="null"
+	local hs now login_pending=0 login_result_json="null"
 
 	enable=$(config_get enable)
 	username=$(config_get username)
@@ -1243,7 +1243,6 @@ _write_status() {
 	if command -v wg >/dev/null 2>&1 && wg show "$iface" >/dev/null 2>&1; then
 		connected=1
 		private_ip=$(uci -q get "network.${iface}.addresses" | awk '{print $1}')
-		endpoint=$(wg show "$iface" endpoints 2>/dev/null | awk 'NF>=2 {print $2; exit}')
 		rx=$(wg show "$iface" transfer 2>/dev/null | awk 'NF>=3 {print $2; exit}')
 		tx=$(wg show "$iface" transfer 2>/dev/null | awk 'NF>=3 {print $3; exit}')
 		hs=$(wg show "$iface" latest-handshakes 2>/dev/null | awk 'NF>=2 {print $2; exit}')
@@ -1263,15 +1262,8 @@ _write_status() {
 		[ -z "$login_result_json" ] && login_result_json="null"
 	fi
 
-	node_name="平台分配节点"
-	node_ep="$endpoint"
-	if [ -z "$node_ep" ]; then
-		node_ep=$(uci -q get "network.@wireguard_${iface}[-1].endpoint_host")
-		[ -n "$node_ep" ] && node_ep="$node_ep:$(uci -q get "network.@wireguard_${iface}[-1].endpoint_port")"
-	fi
-
 	cat > /var/run/gogogo/status.json <<EOF
-{"ok":true,"enable":$want,"want":$want,"connected":$connected,"handshake":$handshake,"split":$split,"killswitch":$killswitch,"account":"$(_json_escape "$username")","login_account":"$(_json_escape "$username")","description":"$(_json_escape "$description")","expired_text":"$(_json_escape "$expired_text")","login_status":$([ -n "$login_status" ] && echo "$login_status" || echo 0),"block_reason":"$(_json_escape "$block_reason")","iface":"$(_json_escape "$iface")","endpoint":"$(_json_escape "$endpoint")","private_ip":"$(_json_escape "$private_ip")","rx":${rx:-0},"tx":${tx:-0},"region":"assigned","live_region":"$([ "$connected" = 1 ] && echo assigned || echo)","exit_ip":"","nodes":[{"region":"assigned","name":"$(_json_escape "$node_name")","endpoint":"$(_json_escape "$node_ep")"}],"login_pending":$login_pending,"login_result":$login_result_json}
+{"ok":true,"enable":$want,"want":$want,"connected":$connected,"handshake":$handshake,"split":$split,"killswitch":$killswitch,"account":"$(_json_escape "$username")","login_account":"$(_json_escape "$username")","description":"$(_json_escape "$description")","expired_text":"$(_json_escape "$expired_text")","login_status":$([ -n "$login_status" ] && echo "$login_status" || echo 0),"block_reason":"$(_json_escape "$block_reason")","iface":"$(_json_escape "$iface")","private_ip":"$(_json_escape "$private_ip")","rx":${rx:-0},"tx":${tx:-0},"region":"assigned","live_region":"$([ "$connected" = 1 ] && echo assigned || echo)","login_pending":$login_pending,"login_result":$login_result_json}
 EOF
 	cat /var/run/gogogo/status.json
 }

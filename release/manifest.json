@@ -1,25 +1,25 @@
 {
-  "tag": "v1.0.2",
-  "version": "1.0.2",
-  "notes": "## 供创未来 1.0.2\n\n- 客户端 `2026091100`：Connect 前保护 WAN 管理会话（SSH 持久，HTTP/HTTPS 临时 /32），避免隧道 `/1` 路由吸走回程\n- 固件含 luci-theme-gogogo 1.0.2 与 luci-app-gogogo 2026091100\n",
+  "tag": "v1.0.3",
+  "version": "1.0.3",
+  "notes": "## 供创未来 1.0.3\n\n- 客户端 `2026091101`：VPN 页不展示服务器端点；加速改为平台分配接入，不提供出口选择；诊断文案对客户隐藏内部进程名，并增加返回按钮\n- 固件含 luci-theme-gogogo 1.0.3 与 luci-app-gogogo 2026091101\n",
   "gogogo": {
-    "version": "2026091100",
-    "filename": "luci-app-gogogo_2026091100_all.ipk",
-    "size": 88450,
-    "sha256": "44dfcf267d8a93ba29726b71bee8755c926c3ec5ffc0708e00dd31ecaa4601e4"
+    "version": "2026091101",
+    "filename": "luci-app-gogogo_2026091101_all.ipk",
+    "size": 88097,
+    "sha256": "2a163ab56f7fc29cb81ce7c2dae67dd179b9dbc7207f42d8c9ab03ddac6a85e3"
   },
   "firmware": {
-    "version": "1.0.2",
+    "version": "1.0.3",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-sysupgrade.bin",
     "size": 17531698,
-    "sha256": "50d77f58f06cebc3009748436caa780af8edc75c4816ef781da8e1d2c70676c6"
+    "sha256": "ce9cec8b2e5d5f413c468afd785eca73ec1166b3f10660cc1f816b3c19ab5e22"
   },
   "factory": {
-    "version": "1.0.2",
+    "version": "1.0.3",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-factory.bin",
     "size": 19136512,
-    "sha256": "f154a5de9d07c9a033d7ba7778a666fd3f4a25347766ef25d8165a9cad3f8dde"
+    "sha256": "07bfd03b7840501f8709b2069c9cf1a4c448ab512b83a7f298c1e12d5cd05292"
   }
 }
