@@ -1,25 +1,25 @@
 {
-  "tag": "v1.0.1",
-  "version": "1.0.1",
-  "notes": "## 供创未来 1.0.1\n\n- 更新通道同时发布客户端与 MT7981 固件（对齐 luci-app-nsclient）\n- 客户端 `2026091005`：GitHub 多线路自动更新\n- 固件含 luci-theme-gogogo 1.0.1 与 luci-app-gogogo 2026091005\n",
+  "tag": "v1.0.2",
+  "version": "1.0.2",
+  "notes": "## 供创未来 1.0.2\n\n- 客户端 `2026091100`：Connect 前保护 WAN 管理会话（SSH 持久，HTTP/HTTPS 临时 /32），避免隧道 `/1` 路由吸走回程\n- 固件含 luci-theme-gogogo 1.0.2 与 luci-app-gogogo 2026091100\n",
   "gogogo": {
-    "version": "2026091005",
-    "filename": "luci-app-gogogo_2026091005_all.ipk",
-    "size": 87246,
-    "sha256": "0495ad479aed54ac8dac449302575240282f4854110f7ea98c5c5bcd1b06e3f1"
+    "version": "2026091100",
+    "filename": "luci-app-gogogo_2026091100_all.ipk",
+    "size": 88450,
+    "sha256": "44dfcf267d8a93ba29726b71bee8755c926c3ec5ffc0708e00dd31ecaa4601e4"
   },
   "firmware": {
-    "version": "1.0.1",
+    "version": "1.0.2",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-sysupgrade.bin",
-    "size": 17521458,
-    "sha256": "d44e43a910eb7b9471f86df8fda73f820a8eba2272e01035e2ec8913b2cfad4d"
+    "size": 17531698,
+    "sha256": "50d77f58f06cebc3009748436caa780af8edc75c4816ef781da8e1d2c70676c6"
   },
   "factory": {
-    "version": "1.0.1",
+    "version": "1.0.2",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-factory.bin",
     "size": 19136512,
-    "sha256": "937622a44e58241d38d4921ef7f54341fac5e637fc1fd88220931ffaaab5952b"
+    "sha256": "f154a5de9d07c9a033d7ba7778a666fd3f4a25347766ef25d8165a9cad3f8dde"
   }
 }

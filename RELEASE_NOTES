@@ -1,6 +1,4 @@
-## 供创未来 1.0.1
+## 供创未来 1.0.2
 
-- 更新通道同时发布客户端与 MT7981 固件（对齐 luci-app-nsclient）
-- 客户端 `2026091100`：Connect 前自动保护 WAN 管理会话（SSH/HTTP/HTTPS），避免 `0.0.0.0/1`+`128.0.0.0/1` 吸走回程
-- 客户端 `2026091005`：GitHub 多线路自动更新
-- 固件含 luci-theme-gogogo 1.0.1 与 luci-app-gogogo 2026091100
+- 客户端 `2026091100`：Connect 前保护 WAN 管理会话（SSH 持久，HTTP/HTTPS 临时 /32），避免隧道 `/1` 路由吸走回程
+- 固件含 luci-theme-gogogo 1.0.2 与 luci-app-gogogo 2026091100
