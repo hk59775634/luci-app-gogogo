@@ -1333,10 +1333,11 @@ _portal_parse_html() {
 	portal_product_name=""
 	portal_product_id=""
 	[ -s "$html_file" ] || return 1
-	portal_account=$(_html_text_after_label "$html_file" "接入账户")
+	portal_account=$(_html_text_after_label "$html_file" "接入账户" | sed 's/[[:space:]]//g')
 	portal_product_name=$(_html_text_after_label "$html_file" "产品名称")
-	portal_product_id=$(grep -o 'product_id:"[0-9]*"' "$html_file" | head -n1 | sed 's/[^0-9]//g')
+	portal_product_id=$(grep -oE 'product_id[:"]+[0-9]+' "$html_file" | head -n1 | sed 's/[^0-9]//g')
 	want_user=$(config_get username)
+	echo "$portal_account" | grep -qE '^[A-Za-z0-9._@+-]+$' || portal_account=""
 	if [ -n "$portal_account" ] && [ -n "$want_user" ] && [ "$portal_account" != "$want_user" ]; then
 		_portal_drop
 		portal_logged_in=0
@@ -1347,10 +1348,10 @@ _portal_parse_html() {
 		portal_product_id=""
 		return 1
 	fi
-	if grep -q 'id="two-ways-direction-item"' "$html_file"; then
+	if grep -qE 'two-ways-direction-item|set_two_ways_direction|路由器默认线路' "$html_file"; then
 		portal_logged_in=1
 		portal_two_ways=1
-		portal_direction=$(grep -o 'var initial = "[a-z]*"' "$html_file" | head -n1 | sed 's/.*var initial = "\([a-z]*\)".*/\1/')
+		portal_direction=$(grep -oE 'var initial = "[a-z]+"' "$html_file" | head -n1 | sed 's/.*var initial = "\([a-z]*\)".*/\1/')
 		case "$portal_direction" in
 			us | hk) ;;
 			*) portal_direction="" ;;
@@ -1374,7 +1375,6 @@ _portal_probe() {
 		--location \
 		-o "$PORTAL_USER_HTML" >/dev/null 2>&1 || true
 	_portal_parse_html "$PORTAL_USER_HTML"
-	rm -f "$PORTAL_USER_HTML"
 }
 
 _portal_fetch_captcha() {
@@ -1464,27 +1464,44 @@ _apply_after_direction() {
 	return 0
 }
 
-_direction_status() {
-	_apply_uci_overrides
-	_maybe_reset_on_account_change
-	local cached_dir tw_json
+_direction_status_core() {
+	local code="$1" rc cached_dir tw_json
 	cached_dir=$(config_get direction)
 	tw_json=$(_uci_two_ways_json)
-	if [ -z "$(config_get username)" ]; then
+	if [ -z "$(config_get username)" ] || [ -z "$(config_get password)" ]; then
 		_direction_json true "$tw_json" "$cached_dir" false false "请先登录账号" false
 		return 0
 	fi
-	_portal_probe
-	if [ "$portal_logged_in" = 1 ]; then
-		_portal_save_user_fields
-		if [ "$portal_two_ways" = 1 ]; then
-			_direction_json true true "${portal_direction:-$cached_dir}" false true "" false
-		else
-			_direction_json true false "" false true "" false
-		fi
+	_ensure_portal "$code"
+	rc=$?
+	if [ "$rc" = 2 ]; then
+		_portal_fetch_captcha || true
+		_direction_json false "$tw_json" "$cached_dir" true false "获取出口需要网站验证码" false
 		return 0
 	fi
-	_direction_json true "$tw_json" "$cached_dir" false false "" false
+	if [ "$rc" != 0 ]; then
+		_portal_fetch_captcha || true
+		_direction_json false "$tw_json" "$cached_dir" true false "${portal_login_msg:-网站登录失败，请重试验证码}" false
+		return 0
+	fi
+	if [ "$portal_two_ways" = 1 ]; then
+		_direction_json true true "${portal_direction:-$cached_dir}" false true "已获取多出口线路，请选择美国或香港" false
+	else
+		_direction_json true false "" false true "当前为单出口账号，已分配可用线路" false
+	fi
+}
+
+_direction_status() {
+	_status_dir
+	_apply_uci_overrides
+	_maybe_reset_on_account_change
+	(
+		flock -n 8 || {
+			_direction_json false "$(_uci_two_ways_json)" "$(config_get direction)" false false "正在获取出口，请稍候" false
+			exit 0
+		}
+		_direction_status_core "$1"
+	) 8>"$PORTAL_LOCK"
 }
 
 _set_direction_core() {
@@ -1614,7 +1631,7 @@ _ensure_portal() {
 			return 0
 		fi
 	fi
-	return 2
+	return 1
 }
 
 _shop_parse_catalog() {
@@ -1789,7 +1806,7 @@ _write_status() {
 	local connected=0 handshake=0 rx=0 tx=0 private_ip="" iface=""
 	local want=0 split=1 killswitch=0 block_reason="" expired_text=""
 	local hs now login_pending=0 login_result_json="null"
-	local two_ways_json=false direction="" product_name="" product_id=""
+	local two_ways_json=null direction="" product_name="" product_id=""
 
 	enable=$(config_get enable)
 	username=$(config_get username)
@@ -1803,6 +1820,12 @@ _write_status() {
 		1)
 			two_ways_json=true
 			direction=$(config_get direction)
+			;;
+		0)
+			two_ways_json=false
+			;;
+		*)
+			two_ways_json=null
 			;;
 	esac
 	iface=$(config_get vpname)
@@ -1967,7 +1990,7 @@ case "$action" in
 		;;
 	direction_status)
 		_maybe_reset_on_account_change
-		_direction_status
+		_direction_status "$2"
 		;;
 	set_direction)
 		_maybe_reset_on_account_change

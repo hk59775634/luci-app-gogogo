@@ -312,8 +312,13 @@ function action_refresh_account()
 end
 
 function action_direction_status()
+	local code = valid_captcha(http.formvalue("code") or "")
+	local cmd = "/usr/sbin/gogogo direction_status"
+	if code then
+		cmd = cmd .. " " .. sh_quote(code)
+	end
 	http.prepare_content("application/json")
-	http.write_json(run_json("/usr/sbin/gogogo direction_status"))
+	http.write_json(run_json(cmd))
 end
 
 function action_set_direction()

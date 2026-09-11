@@ -102,6 +102,7 @@
 		color: var(--nros-primary-fg, #fff);
 	}
 	#gogogo-app .nsc-dir-btn:disabled { opacity: .55; cursor: not-allowed; }
+	#gogogo-app #nsc-dir-assigned:disabled { opacity: 1; cursor: default; }
 	#gogogo-app .nsc-dir-captcha {
 		display: flex;
 		flex-wrap: wrap;
@@ -151,7 +152,7 @@
 	<div class="nros-page-head">
 		<div>
 			<h1 class="nros-title" name="content">跨境加速</h1>
-			<p class="nros-subtitle">登录供创未来账号后连接平台分配的加速服务。分流：国内走本地网络，海外走隧道。全局：全部公网走隧道。</p>
+			<p class="nros-subtitle">三步连接：登录账号 → 获取出口 → 连接加速。分流：国内走本地网络，海外走隧道。全局：全部公网走隧道。</p>
 		</div>
 		<div class="nsc-actions" style="margin-top:0">
 			<input type="button" class="nros-btn" id="nsc-guide-start" value="使用引导" />
@@ -239,24 +240,40 @@
 		<section class="nros-card" id="nsc-card-exits">
 			<div class="nros-card__hd">
 				<div>
-					<div class="nros-section-title">连接</div>
-					<div class="nsc-step-label">第 2 步 · 接入加速服务</div>
+					<div class="nros-section-title">出口与连接</div>
+					<div class="nsc-step-label">第 2–3 步 · 获取出口后接入</div>
 				</div>
 			</div>
 			<div class="nros-card__bd">
-				<p class="nsc-hint" id="nsc-conn-hint" style="margin:0 0 .8em">出口由平台按账号分配。多出口账号可在下方切换美国 / 香港，切换后自动重连，无需重启。</p>
-				<div id="nsc-dir-wrap" class="nsc-dir-wrap" hidden>
-					<div class="nsc-toggle__label">默认线路</div>
-					<div class="nsc-hint">与网站「路由器默认线路」相同。点选后本机自动换线。</div>
-					<div class="nsc-dir-capsule" role="group" aria-label="默认线路">
-						<button type="button" class="nsc-dir-btn" id="nsc-dir-us" data-dir="us">US 美国</button>
-						<button type="button" class="nsc-dir-btn" id="nsc-dir-hk" data-dir="hk">HK 香港</button>
+				<div id="nsc-step-exits">
+					<div class="nsc-toggle__label">第 2 步 · 获取出口</div>
+					<p class="nsc-hint" id="nsc-conn-hint" style="margin:0 0 .6em">登录后点「获取出口」，自动判断单出口或多出口。多出口可选手动选择美国 / 香港。</p>
+					<div class="nsc-actions" style="margin-top:0">
+						<input type="button" class="nros-btn nros-btn--primary" id="nsc-fetch-exits" value="获取出口" />
+					</div>
+					<div id="nsc-dir-wrap" class="nsc-dir-wrap" hidden>
+						<div class="nsc-toggle__label">可选出口</div>
+						<div class="nsc-hint">与网站「路由器默认线路」相同。点选后本机自动换线。</div>
+						<div class="nsc-dir-capsule" role="group" aria-label="可选出口">
+							<button type="button" class="nsc-dir-btn" id="nsc-dir-us" data-dir="us">US 美国</button>
+							<button type="button" class="nsc-dir-btn" id="nsc-dir-hk" data-dir="hk">HK 香港</button>
+						</div>
+					</div>
+					<div id="nsc-dir-single" class="nsc-dir-wrap" hidden>
+						<div class="nsc-toggle__label">可用出口</div>
+						<div class="nsc-hint">当前账号为单出口，只能使用平台已分配线路。</div>
+						<div class="nsc-dir-capsule" role="group" aria-label="可用出口">
+							<button type="button" class="nsc-dir-btn nsc-on" id="nsc-dir-assigned" disabled="disabled">平台分配</button>
+						</div>
 					</div>
 				</div>
-				<div id="nsc-conn-state" class="nsc-meta">登录后可连接</div>
-				<div class="nsc-actions">
-					<input type="button" class="nros-btn nros-btn--primary" id="nsc-connect" value="连接" />
-					<input type="button" class="nros-btn" id="nsc-disconnect" value="断开" />
+				<div id="nsc-step-conn" style="margin-top:1.1em;padding-top:1em;border-top:1px solid var(--nros-border, #eee)">
+					<div class="nsc-toggle__label">第 3 步 · 连接加速</div>
+					<div id="nsc-conn-state" class="nsc-meta">登录并获取出口后可连接</div>
+					<div class="nsc-actions">
+						<input type="button" class="nros-btn nros-btn--primary" id="nsc-connect" value="连接" />
+						<input type="button" class="nros-btn" id="nsc-disconnect" value="断开" />
+					</div>
 				</div>
 			</div>
 		</section>
@@ -298,20 +315,27 @@
 	var accountFilled = false;
 	var pendingDir = '';
 	var pendingShop = null;
+	var pendingFetch = false;
 	var dirKnown = false;
 	var GUIDE_KEY = 'gogogo-vpn-guide';
 	var GUIDE_STEPS = [
 		{
 			target: 'nsc-card-account',
-			kicker: '两步连接  1 / 2',
+			kicker: '三步连接  1 / 3',
 			title: '先登录账号',
 			body: '填写供创未来平台账号和密码，点「登录」。登录成功后会显示到期时间。已保存过密码则可留空。'
 		},
 		{
-			target: 'nsc-card-exits',
-			kicker: '两步连接  2 / 2',
-			title: '再连接加速服务',
-			body: '多出口账号可在本页切换美国 / 香港，不必再去网站。点「连接」建立隧道；也可以打开「开机连接」，WAN 就绪后自动接入。'
+			target: 'nsc-step-exits',
+			kicker: '三步连接  2 / 3',
+			title: '再获取出口',
+			body: '点「获取出口」判断账号是单出口还是多出口。多出口可选手动选择美国 / 香港；单出口只能使用平台已分配线路。网站会话需要验证码时在上方填写。'
+		},
+		{
+			target: 'nsc-step-conn',
+			kicker: '三步连接  3 / 3',
+			title: '最后连接加速',
+			body: '出口确认后点「连接」建立隧道。也可以打开「开机连接」，WAN 就绪后自动接入。'
 		}
 	];
 	var guideStep = -1;
@@ -347,14 +371,20 @@
 		return v === true || v === 1 || v === '1';
 	}
 
+	function exitsReady(st) {
+		if (!st) return false;
+		return st.two_ways === true || st.two_ways === false || st.two_ways === 1 || st.two_ways === 0 || st.two_ways === '1' || st.two_ways === '0';
+	}
+
 	function updateButtons() {
 		var st = lastStatus || {};
 		var connBtn = $('nsc-connect');
 		var discBtn = $('nsc-disconnect');
 		if (busy) return;
 		$('nsc-login').disabled = false;
+		if ($('nsc-fetch-exits')) $('nsc-fetch-exits').disabled = !(st.account || st.login_account);
 		discBtn.disabled = !st.connected;
-		connBtn.disabled = false;
+		connBtn.disabled = !(st.connected || st.account || st.login_account);
 		if (st.connected && st.handshake)
 			connBtn.value = '重新连接';
 		else if (st.connected)
@@ -377,17 +407,22 @@
 			el.textContent = '已接入，等待握手';
 		else if (on)
 			el.textContent = '已接入平台分配的加速服务';
+		else if (st && (st.account || st.expired_text) && st.two_ways === false)
+			el.textContent = '已确认单出口，可连接';
+		else if (st && (st.account || st.expired_text) && twoWaysOn(st) && exitsReady(st))
+			el.textContent = '已获取多出口，可选择后连接';
 		else if (st && (st.account || st.expired_text))
-			el.textContent = '已登录，可连接';
+			el.textContent = '已登录，可选择出口后连接';
 		else
-			el.textContent = '登录后可连接';
+			el.textContent = '登录后可获取出口并连接';
 		updateButtons();
 	}
 
 	function twoWaysOn(st) {
 		if (!st) return false;
 		if (!(st.account || st.login_account)) return false;
-		return st.two_ways === true || st.two_ways === 1 || st.two_ways === '1';
+		if (st.two_ways === false || st.two_ways === 0 || st.two_ways === '0') return false;
+		return true;
 	}
 
 	function dirLabel(dir) {
@@ -427,22 +462,33 @@
 
 	function renderDir(st) {
 		var wrap = $('nsc-dir-wrap');
+		var single = $('nsc-dir-single');
 		var hint = $('nsc-conn-hint');
+		var assigned = $('nsc-dir-assigned');
 		if (!wrap) return;
-		if (!twoWaysOn(st)) {
-			wrap.hidden = true;
+		if (twoWaysOn(st)) {
+			wrap.hidden = false;
+			if (single) single.hidden = true;
 			if (hint) {
-				if (st && (st.two_ways === false || st.two_ways === 0 || st.two_ways === '0'))
-					hint.textContent = '出口由平台按账号分配，本机无需选择节点。';
+				if (st.two_ways === true || st.two_ways === 1 || st.two_ways === '1')
+					hint.textContent = '多出口账号可选择美国 / 香港。切换后自动重连，无需重启路由器。';
 				else
-					hint.textContent = '出口由平台按账号分配。多出口账号可在下方切换美国 / 香港，切换后自动重连，无需重启。';
+					hint.textContent = '登录后可先选美国 / 香港。点「获取出口」确认：单出口会只保留已分配线路。';
 			}
+			markDirButtons(st.direction || pendingDir);
 			return;
 		}
-		wrap.hidden = false;
+		wrap.hidden = true;
+		if (st && (st.two_ways === false || st.two_ways === 0 || st.two_ways === '0')) {
+			if (single) single.hidden = false;
+			if (assigned) assigned.textContent = '平台分配';
+			if (hint)
+				hint.textContent = '当前为单出口账号，只能使用平台已分配的可用线路。';
+			return;
+		}
+		if (single) single.hidden = true;
 		if (hint)
-			hint.textContent = '多出口账号可切换美国 / 香港。切换后自动重连，无需重启路由器。';
-		markDirButtons(st.direction || pendingDir);
+			hint.textContent = '登录后点「获取出口」，自动判断单出口或多出口。多出口可选手动选择美国 / 香港。';
 	}
 
 	function renderShop(st) {
@@ -613,22 +659,59 @@
 		});
 	}
 
-	function probeDirection() {
-		if (dirKnown) return;
-		new XHR().get(U_DIR_STATUS, null, function(x, j) {
-			if (!j) return;
-			dirKnown = true;
-			if (lastStatus) {
-				if (j.two_ways === false) lastStatus.two_ways = false;
-				else if (j.two_ways === true) lastStatus.two_ways = true;
-				lastStatus.direction = j.direction || '';
-				if (j.product_name) lastStatus.product_name = j.product_name;
-				if (j.product_id) lastStatus.product_id = j.product_id;
-				renderStatus(lastStatus);
-			} else {
-				renderDir(j);
+	function applyFetchResult(j, promptCaptcha) {
+		if (!j) {
+			setMsg('获取出口失败：无有效响应', true);
+			return false;
+		}
+		if (j.need_captcha) {
+			if (promptCaptcha) {
+				pendingFetch = true;
+				showCaptcha(true);
+				setMsg(j.msg || '请输入网站验证码后获取出口', true);
 			}
+			return false;
+		}
+		pendingFetch = false;
+		dirKnown = true;
+		showCaptcha(false);
+		if (lastStatus) {
+			if (j.two_ways === true) lastStatus.two_ways = true;
+			else if (j.two_ways === false) lastStatus.two_ways = false;
+			lastStatus.direction = j.direction || '';
+			if (j.product_name) lastStatus.product_name = j.product_name;
+			if (j.product_id) lastStatus.product_id = j.product_id;
+			renderStatus(lastStatus);
+		} else {
+			renderDir(j);
+		}
+		if (j.ok) setMsg(j.msg || '出口已获取');
+		else setMsg(j.msg || '获取出口失败', true);
+		return !!(j && j.ok);
+	}
+
+	function fetchExits(opts) {
+		opts = opts || {};
+		var promptCaptcha = opts.promptCaptcha !== false;
+		if (busy) return;
+		var fields = {};
+		var code = opts.code || (promptCaptcha ? shopCode() : '');
+		if (code) fields.code = code;
+		withBusy($('nsc-fetch-exits'), function(done) {
+			setMsg(code ? '正在验证并获取出口…' : '正在获取出口…');
+			post(U_DIR_STATUS, fields, function(j) {
+				if (j && j.need_captcha && promptCaptcha)
+					pendingFetch = true;
+				else
+					pendingFetch = false;
+				applyFetchResult(j, promptCaptcha);
+				done();
+			});
 		});
+	}
+
+	function probeDirection() {
+		fetchExits({ promptCaptcha: false });
 	}
 
 	function row(k, v) {
@@ -660,8 +743,10 @@
 
 		var acc = st.login_account || st.account || '';
 		var traffic = '';
-		var line = twoWaysOn(st) ? (dirLabel(st.direction) || '') : '';
-		if (!line) line = '平台分配';
+		var line = '';
+		if (st.two_ways === false || st.two_ways === 0 || st.two_ways === '0') line = '平台分配';
+		else if (twoWaysOn(st)) line = dirLabel(st.direction) || '可选择';
+		else if (st.account || st.login_account) line = '未获取';
 		if (st.connected && !connecting)
 			traffic = '↓ ' + bytes(st.rx) + '　↑ ' + bytes(st.tx);
 
@@ -739,7 +824,7 @@
 	function withBusy(btn, work) {
 		if (busy) return;
 		busy = true;
-		var btns = [$('nsc-login'), $('nsc-connect'), $('nsc-disconnect'), $('nsc-refresh-account'), $('nsc-dir-captcha-go'), $('nsc-shop-order'), $('nsc-shop-renew'), $('nsc-shop-renew-go')];
+		var btns = [$('nsc-login'), $('nsc-connect'), $('nsc-disconnect'), $('nsc-refresh-account'), $('nsc-dir-captcha-go'), $('nsc-fetch-exits'), $('nsc-shop-order'), $('nsc-shop-renew'), $('nsc-shop-renew-go')];
 		var old = [];
 		for (var i = 0; i < btns.length; i++) {
 			if (!btns[i]) continue;
@@ -838,10 +923,11 @@
 			dirKnown = false;
 			pendingDir = '';
 			pendingShop = null;
+			pendingFetch = false;
 			showCaptcha(false);
 			hideShopPanels();
 			if (lastStatus) {
-				lastStatus.two_ways = false;
+				lastStatus.two_ways = null;
 				lastStatus.direction = '';
 				lastStatus.product_name = '';
 				lastStatus.product_id = '';
@@ -857,14 +943,15 @@
 					if (ok) {
 						setMsg(msg || '登录成功');
 						dirKnown = false;
-						probeDirection();
+						done();
+						fetchExits({ promptCaptcha: true });
 						if (guideOn && guideStep === 0)
 							showGuideStep(1);
 					} else {
 						setMsg(msg || '登录失败', true);
+						refreshStatus();
+						done();
 					}
-					refreshStatus();
-					done();
 				});
 			});
 		});
@@ -913,9 +1000,16 @@
 			runShop(pendingShop.op, pendingShop.extra);
 			return;
 		}
+		if (pendingFetch) {
+			fetchExits({ promptCaptcha: true, code: code });
+			return;
+		}
 		var dir = pendingDir || (lastStatus && lastStatus.direction) || '';
 		if (!dir) { setMsg('请先选择美国或香港', true); return; }
 		requestDir(dir, code);
+	};
+	$('nsc-fetch-exits').onclick = function() {
+		fetchExits({ promptCaptcha: true });
 	};
 	$('nsc-shop-order').onclick = function() {
 		var rb = $('nsc-shop-renew-box');
@@ -1095,7 +1189,8 @@
 	});
 	if (CACHED && CACHED.ok) renderStatus(CACHED);
 	refreshStatus(function(st) {
-		probeDirection();
+		var unknown = !!(st && (st.account || st.login_account) && !exitsReady(st));
+		fetchExits({ promptCaptcha: unknown });
 		if (!guideDone() && !(st && st.connected && st.handshake))
 			setTimeout(function() { showGuideStep(0); }, 500);
 	});
