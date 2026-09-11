@@ -259,7 +259,7 @@ _route_guard_stamp_part() {
 	fi
 }
 
-# 管理 IP 写入策略表（metric 1 优先于 cpe_chnroutes），避免 ip rule 抢在策略表前导致 SSH 中断
+# 管理 IP 写入策略表（metric 1 优先于 cpe_chnroutes），并在主表钉 /32，避免 VPN /1 吸走回程
 _apply_route_guard_in_table() {
 	local gw="$1" wan_dev="$2" ip
 	[ -n "$gw" ] || return 0
@@ -268,6 +268,7 @@ _apply_route_guard_in_table() {
 		ip=$(echo "$ip" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 		[ -n "$ip" ] || continue
 		ip route replace "${ip}/32" via "$gw" dev "$wan_dev" metric 1 table "$route_table_id" 2>/dev/null
+		ip route replace "${ip}/32" via "$gw" dev "$wan_dev" metric "$wan_route_metric" 2>/dev/null
 	done
 }
 
@@ -303,6 +304,161 @@ _del_route_guard_host() {
 	done
 	uci set "${CPE_UCI}.@default[0].route_guard_hosts=${new_hosts# }"
 	uci commit "$CPE_UCI"
+	if [ -f "$ENDPOINT_HOST_FILE" ] && [ "$(cat "$ENDPOINT_HOST_FILE" 2>/dev/null)" = "$ip" ]; then
+		:
+	else
+		ip route del "${ip}/32" 2>/dev/null
+	fi
+}
+
+_is_ipv4_host() {
+	local ip="$1"
+	echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || return 1
+	[ "$ip" = "0.0.0.0" ] && return 1
+	[ "$ip" = "255.255.255.255" ] && return 1
+	return 0
+}
+
+_is_loopback_ip() {
+	case "$1" in
+		127.*) return 0 ;;
+	esac
+	return 1
+}
+
+_own_ipv4_list() {
+	ip -4 -o addr show 2>/dev/null | awk '{
+		split($4, a, "/")
+		if (a[1] ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) print a[1]
+	}'
+}
+
+_is_own_ip() {
+	local ip="$1" a
+	for a in $(_own_ipv4_list); do
+		[ "$a" = "$ip" ] && return 0
+	done
+	return 1
+}
+
+_is_wg_endpoint_ip() {
+	local ip="$1" ep
+	[ -n "$server_ip" ] && [ "$ip" = "$server_ip" ] && return 0
+	[ -f "$ENDPOINT_HOST_FILE" ] || return 1
+	ep=$(cat "$ENDPOINT_HOST_FILE" 2>/dev/null)
+	[ -n "$ep" ] && [ "$ip" = "$ep" ]
+}
+
+# 本机直连网段（scope link）上的对端不必钉 WAN，否则 /32 via gw 会抢走 LAN 回程
+_is_connected_ip() {
+	local ip="$1"
+	[ -n "$ip" ] || return 1
+	ip -4 route show scope link 2>/dev/null | awk -v ip="$ip" '
+	function iptoint(s,   a) {
+		split(s, a, ".")
+		return a[1]*16777216 + a[2]*65536 + a[3]*256 + a[4]
+	}
+	function in_cidr(addr, cidr,   p, n, net, pfx, chunk) {
+		n = split(cidr, p, "/")
+		net = p[1]
+		pfx = (n > 1) ? p[2]+0 : 32
+		if (pfx <= 0) return 1
+		if (pfx >= 32) return (addr == net)
+		chunk = 2^(32-pfx)
+		return int(iptoint(addr)/chunk) == int(iptoint(net)/chunk)
+	}
+	$2 == "dev" && $1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ {
+		if (in_cidr(ip, $1)) { found=1; exit }
+	}
+	END { exit found ? 0 : 1 }
+	'
+}
+
+_emit_mgmt_ip() {
+	local ip="$1"
+	ip=$(echo "$ip" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+	_is_ipv4_host "$ip" || return 1
+	_is_loopback_ip "$ip" && return 1
+	_is_own_ip "$ip" && return 1
+	_is_wg_endpoint_ip "$ip" && return 1
+	_is_connected_ip "$ip" && return 1
+	echo "$ip"
+}
+
+_hex_le32_to_ip() {
+	local h="$1"
+	[ ${#h} -eq 8 ] || return 1
+	printf '%d.%d.%d.%d\n' \
+		"$((0x$(printf '%s' "$h" | cut -c7-8)))" \
+		"$((0x$(printf '%s' "$h" | cut -c5-6)))" \
+		"$((0x$(printf '%s' "$h" | cut -c3-4)))" \
+		"$((0x$(printf '%s' "$h" | cut -c1-2)))"
+}
+
+_mgmt_peers_from_ssh_env() {
+	[ -n "$SSH_CLIENT" ] && echo "$SSH_CLIENT" | awk '{print $1}'
+	[ -n "$SSH_CONNECTION" ] && echo "$SSH_CONNECTION" | awk '{print $1}'
+}
+
+_mgmt_peers_from_sockets() {
+	{
+		command -v ss >/dev/null 2>&1 && ss -tn 2>/dev/null
+		netstat -tn 2>/dev/null
+	} | awk '
+	BEGIN { ports[22]=1; ports[80]=1; ports[443]=1 }
+	$0 !~ /ESTAB/ { next }
+	{
+		loc=""; rem=""
+		for (i = 1; i <= NF; i++) {
+			if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$/) {
+				if (loc == "") loc = $i
+				else { rem = $i; break }
+			}
+		}
+		if (loc == "" || rem == "") next
+		split(loc, l, ":")
+		split(rem, r, ":")
+		if (l[2] in ports) print r[1]
+	}'
+}
+
+_mgmt_peers_from_proc_tcp() {
+	local loc rem st lport hip
+	[ -f /proc/net/tcp ] || return 0
+	while read -r _ loc rem st _; do
+		[ "$st" = "01" ] || continue
+		lport="${loc##*:}"
+		case "$lport" in
+			0016|0050|01BB|01bb) ;;
+			*) continue ;;
+		esac
+		hip="${rem%%:*}"
+		_hex_le32_to_ip "$hip"
+	done < /proc/net/tcp
+}
+
+_discover_mgmt_peers() {
+	{
+		_mgmt_peers_from_ssh_env
+		_mgmt_peers_from_sockets
+		_mgmt_peers_from_proc_tcp
+	} | while read -r ip; do
+		_emit_mgmt_ip "$ip"
+	done | awk 'NF && !seen[$1]++ { print $1 }'
+}
+
+# Connect 前发现 WAN 管理对端，写入 route_guard，并钉主表 /32（须在 _add_vpn_routes 之前）
+_protect_mgmt_sessions() {
+	local ip gw wan_dev NET_IF
+	for ip in $(_discover_mgmt_peers); do
+		_add_route_guard_host "$ip"
+	done
+	gw=$(_getwan)
+	[ -z "$gw" ] && return 0
+	network_find_wan NET_IF
+	network_get_device wan_dev "${NET_IF}"
+	[ -z "$wan_dev" ] && wan_dev="$NET_IF"
+	_apply_route_guard_in_table "$gw" "$wan_dev"
 }
 
 _add_endpoint_route() {
@@ -362,6 +518,7 @@ _refresh_split_routes() {
 	network_get_device NET_DEV "${NET_IF}"
 	[ -z "$NET_DEV" ] && NET_DEV="$NET_IF"
 	[ -n "$NET_GATEWAY" ] && _apply_split_routes_policy "$NET_GATEWAY" "$NET_DEV"
+	_protect_mgmt_sessions
 }
 
 _del_vpn_routes() {
@@ -656,6 +813,7 @@ _checkroute() {
 		_apply_split_routes_policy "$NET_GATEWAY" "$NET_DEV"
 	fi
 
+	_protect_mgmt_sessions
 	_add_vpn_routes
 }
 
@@ -1199,6 +1357,7 @@ case "$action" in
 		else
 			_refresh_split_routes
 		fi
+		_protect_mgmt_sessions
 		_add_vpn_routes 2>/dev/null
 		_checkdns
 		;;
