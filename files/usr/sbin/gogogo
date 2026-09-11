@@ -403,7 +403,7 @@ _mgmt_peers_from_ssh_env() {
 _mgmt_peers_from_sockets() {
 	{
 		command -v ss >/dev/null 2>&1 && ss -tn 2>/dev/null
-		netstat -tn 2>/dev/null
+		command -v netstat >/dev/null 2>&1 && netstat -tn 2>/dev/null
 	} | awk '
 	BEGIN { ports[22]=1; ports[80]=1; ports[443]=1 }
 	$0 !~ /ESTAB/ { next }
@@ -447,10 +447,18 @@ _discover_mgmt_peers() {
 	done | awk 'NF && !seen[$1]++ { print $1 }'
 }
 
-# Connect 前发现 WAN 管理对端，写入 route_guard，并钉主表 /32（须在 _add_vpn_routes 之前）
+_pin_mgmt_host() {
+	local ip="$1" gw="$2" wan_dev="$3"
+	[ -n "$ip" ] && [ -n "$gw" ] && [ -n "$wan_dev" ] || return 1
+	ip route replace "${ip}/32" via "$gw" dev "$wan_dev" metric 1 table "$route_table_id" 2>/dev/null
+	ip route replace "${ip}/32" via "$gw" dev "$wan_dev" metric "$wan_route_metric" 2>/dev/null
+}
+
+# Connect 前发现 WAN 管理对端。仅 SSH 会话写入 route_guard（持久）；
+# 当前 22/80/443 已建立连接只钉临时 /32，避免主循环把任意 WAN TCP 写入 flash。
 _protect_mgmt_sessions() {
 	local ip gw wan_dev NET_IF
-	for ip in $(_discover_mgmt_peers); do
+	for ip in $(_mgmt_peers_from_ssh_env | while read -r p; do _emit_mgmt_ip "$p"; done | awk 'NF && !seen[$1]++'); do
 		_add_route_guard_host "$ip"
 	done
 	gw=$(_getwan)
@@ -459,6 +467,9 @@ _protect_mgmt_sessions() {
 	network_get_device wan_dev "${NET_IF}"
 	[ -z "$wan_dev" ] && wan_dev="$NET_IF"
 	_apply_route_guard_in_table "$gw" "$wan_dev"
+	for ip in $(_discover_mgmt_peers); do
+		_pin_mgmt_host "$ip" "$gw" "$wan_dev"
+	done
 }
 
 _add_endpoint_route() {
@@ -1354,10 +1365,10 @@ case "$action" in
 		if _uci_flag tunnelall; then
 			_clear_split_routes
 			_stop_legacy_quagga
+			_protect_mgmt_sessions
 		else
 			_refresh_split_routes
 		fi
-		_protect_mgmt_sessions
 		_add_vpn_routes 2>/dev/null
 		_checkdns
 		;;
