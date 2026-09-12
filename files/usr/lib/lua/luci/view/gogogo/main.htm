@@ -20,7 +20,7 @@
 	#gogogo-app .nsc-state { font-size: 1.15em; font-weight: 600; margin: 0 0 .7em; }
 	#gogogo-app .nsc-rows {
 		display: grid;
-		grid-template-columns: 5.5em 1fr;
+		grid-template-columns: 8em 1fr;
 		gap: .4em .9em;
 		align-items: baseline;
 		font-size: 90%;
@@ -73,10 +73,16 @@
 	}
 	#gogogo-app .nsc-badge-wait { background: var(--nros-warning, #f89406); }
 	#gogogo-app input[disabled] { opacity: .55; cursor: not-allowed; }
+	#gogogo-app input[hidden] { display: none !important; }
 	#gogogo-app input.nros-btn { width: auto; appearance: none; -webkit-appearance: none; border: 1px solid transparent; }
 	#gogogo-app input.nros-btn.nros-btn--primary {
 		background: var(--nros-primary, #3370FF);
 		color: var(--nros-primary-fg, #fff);
+		border-color: transparent;
+	}
+	#gogogo-app input.nros-btn.nros-btn--success {
+		background: var(--nros-success, #15803D);
+		color: #fff;
 		border-color: transparent;
 	}
 	#gogogo-app .nsc-dir-wrap { margin: 0 0 .9em; }
@@ -103,15 +109,28 @@
 		color: var(--nros-primary-fg, #fff);
 	}
 	#gogogo-app .nsc-dir-btn:disabled { opacity: .55; cursor: not-allowed; }
-	#gogogo-app .nsc-dir-captcha {
+	#gogogo-app .nsc-shop { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--nros-border, #eee); }
+	#nsc-dlg[hidden] { display: none !important; }
+	#nsc-dlg { z-index: 90; }
+	#nsc-dlg .nros-modal {
+		width: min(560px, 100%);
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+	}
+	#nsc-dlg .nros-card__bd { min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+	#nsc-dlg .nsc-msg { margin: 0 0 .75em; min-height: 1.2em; color: var(--nros-text-2, #555); }
+	#nsc-dlg .nsc-msg--ok { color: var(--nros-success, #2a2); }
+	#nsc-dlg .nsc-msg--err { color: var(--nros-danger, #c00); }
+	#nsc-dlg .nsc-dir-captcha {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
 		gap: 8px;
-		margin-top: 10px;
+		margin: 0 0 .75em;
 	}
-	#gogogo-app .nsc-dir-captcha[hidden] { display: none !important; }
-	#gogogo-app .nsc-dir-captcha img {
+	#nsc-dlg .nsc-dir-captcha[hidden] { display: none !important; }
+	#nsc-dlg .nsc-dir-captcha img {
 		height: 40px;
 		width: 121px;
 		border-radius: 6px;
@@ -119,19 +138,32 @@
 		cursor: pointer;
 		background: #fff;
 	}
-	#gogogo-app .nsc-dir-captcha input[type="text"] {
+	#nsc-dlg .nsc-dir-captcha input[type="text"] {
 		width: 7em;
 		min-width: 7em;
 	}
-	#gogogo-app .nsc-shop { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--nros-border, #eee); }
-	#gogogo-app .nsc-shop-item {
-		display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
-		padding: .5em 0; border-bottom: 1px solid var(--nros-border, #f0f0f0);
+	#nsc-shop-catalog {
+		overflow-y: auto;
+		max-height: min(48vh, 22em);
+		margin: 0 -4px;
+		padding: 0 4px;
 	}
-	#gogogo-app .nsc-shop-item:last-child { border-bottom: 0; }
-	#gogogo-app .nsc-shop-item .nsc-name { flex: 1; min-width: 10em; }
-	#gogogo-app .nsc-shop-item input[type="number"] { width: 4.2em; }
-	#gogogo-app .nsc-shop-renew { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+	#nsc-shop-catalog[hidden],
+	#nsc-shop-renew-box[hidden] { display: none !important; }
+	.nsc-shop-item {
+		display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+		padding: .55em 0; border-bottom: 1px solid var(--nros-border, #f0f0f0);
+	}
+	.nsc-shop-item:last-child { border-bottom: 0; }
+	.nsc-shop-item .nsc-name { flex: 1; min-width: 10em; }
+	.nsc-shop-item input[type="number"] { width: 4.2em; }
+	#nsc-dlg .nsc-hint { color: var(--nros-text-3, #888); font-size: 85%; }
+	#nsc-dlg.nsc-busy .nsc-shop-buy,
+	#nsc-dlg.nsc-busy #nsc-shop-renew-go,
+	#nsc-dlg.nsc-busy #nsc-dir-captcha-go {
+		opacity: .55;
+		pointer-events: none;
+	}
 	#gogogo-app .nsc-step-label { margin-top: 2px; font-size: 12px; font-weight: 500; color: var(--nros-text-3, #6B7280); }
 	#gogogo-app .nsc-tour-target { position: relative; z-index: 5; box-shadow: 0 0 0 3px var(--nros-primary, #3370FF); }
 	#nsc-tour[hidden] { display: none !important; }
@@ -162,11 +194,6 @@
 
 	<div id="nsc-status" class="nsc-status nsc-off">正在读取状态…</div>
 	<div id="nsc-msg" class="nsc-msg"></div>
-	<div id="nsc-dir-captcha" class="nsc-dir-captcha" hidden>
-		<img id="nsc-dir-captcha-img" alt="验证码" title="点击刷新" />
-		<input class="nros-input" type="text" id="nsc-dir-captcha-code" maxlength="8" autocomplete="off" placeholder="网站验证码" />
-		<input type="button" class="nros-btn nros-btn--primary" id="nsc-dir-captcha-go" value="确认" />
-	</div>
 
 	<div class="nros-grid nros-grid--2">
 		<section class="nros-card" id="nsc-card-account">
@@ -228,12 +255,6 @@
 						<input type="button" class="nros-btn nros-btn--primary" id="nsc-shop-order" value="订购" />
 						<input type="button" class="nros-btn" id="nsc-shop-renew" value="续费" />
 					</div>
-					<div id="nsc-shop-catalog" hidden></div>
-					<div id="nsc-shop-renew-box" class="nsc-shop-renew" hidden>
-						<span class="nsc-hint">续费月数</span>
-						<input class="nros-input" type="number" id="nsc-shop-month" min="1" max="12" value="1" />
-						<input type="button" class="nros-btn nros-btn--primary" id="nsc-shop-renew-go" value="去支付" />
-					</div>
 				</div>
 			</div>
 		</section>
@@ -260,8 +281,8 @@
 					<div class="nsc-toggle__label">第 3 步 · 连接加速</div>
 					<div id="nsc-conn-state" class="nsc-meta">登录后可连接</div>
 					<div class="nsc-actions">
-						<input type="button" class="nros-btn nros-btn--primary" id="nsc-connect" value="连接" />
-						<input type="button" class="nros-btn" id="nsc-disconnect" value="断开" />
+						<input type="button" class="nros-btn nros-btn--success" id="nsc-connect" value="连接" />
+						<input type="button" class="nros-btn nros-btn--primary" id="nsc-disconnect" value="断开" hidden="hidden" />
 					</div>
 				</div>
 			</div>
@@ -281,6 +302,29 @@
 	</div>
 </div>
 
+<div id="nsc-dlg" class="nros-modal-mask" hidden>
+	<div class="nros-modal" role="dialog" aria-modal="true" aria-labelledby="nsc-dlg-title">
+		<div class="nros-card__hd">
+			<div class="nros-section-title" id="nsc-dlg-title">套餐</div>
+			<button type="button" class="nros-icon-btn" id="nsc-dlg-close" aria-label="关闭">×</button>
+		</div>
+		<div class="nros-card__bd">
+			<div id="nsc-dlg-msg" class="nsc-msg"></div>
+			<div id="nsc-dir-captcha" class="nsc-dir-captcha" hidden>
+				<img id="nsc-dir-captcha-img" alt="验证码" title="点击刷新" />
+				<input class="nros-input" type="text" id="nsc-dir-captcha-code" maxlength="8" autocomplete="off" placeholder="网站验证码" />
+				<input type="button" class="nros-btn nros-btn--primary" id="nsc-dir-captcha-go" value="确认" />
+			</div>
+			<div id="nsc-shop-catalog" hidden></div>
+			<div id="nsc-shop-renew-box" class="nsc-shop-renew" hidden>
+				<span class="nsc-hint">续费月数</span>
+				<input class="nros-input" type="number" id="nsc-shop-month" min="1" max="12" value="1" />
+				<input type="button" class="nros-btn nros-btn--primary" id="nsc-shop-renew-go" value="去支付" />
+			</div>
+		</div>
+	</div>
+</div>
+
 <script type="text/javascript">//<![CDATA[
 (function() {
 	var U_STATUS = '<%=luci.dispatcher.build_url("admin", "gogogo", "status")%>';
@@ -294,6 +338,7 @@
 	var U_SHOP_CATALOG = '<%=luci.dispatcher.build_url("admin", "gogogo", "shop_catalog")%>';
 	var U_SHOP_BUY = '<%=luci.dispatcher.build_url("admin", "gogogo", "shop_buy")%>';
 	var U_SHOP_RENEW = '<%=luci.dispatcher.build_url("admin", "gogogo", "shop_renew")%>';
+	var U_SHOP_PAYGO = '<%=luci.dispatcher.build_url("admin", "gogogo", "shop_paygo")%>';
 	var TOKEN = '<%=token%>';
 	var CACHED = <% luci.http.write(status_cache_json or "{}") %>;
 
@@ -315,7 +360,7 @@
 			target: 'nsc-step-exits',
 			kicker: '三步连接  2 / 3',
 			title: '再选择出口',
-			body: '登录后直接点美国或香港。多出口会自动换线；单出口会提示无法切换。订购 / 续费若需要网站验证码，在页面上方填写。'
+			body: '登录后直接点美国或香港。多出口会自动换线；单出口会提示无法切换。订购 / 续费在弹出窗口完成，验证码也在窗口内填写。'
 		},
 		{
 			target: 'nsc-step-conn',
@@ -347,10 +392,43 @@
 		return n.toFixed(1) + ' ' + u[i];
 	}
 
-	function setMsg(text, isErr) {
-		var el = $('nsc-msg');
+	function paintMsg(el, text, isErr) {
+		if (!el) return;
 		el.textContent = text || '';
 		el.className = 'nsc-msg' + (text ? (isErr ? ' nsc-msg--err' : ' nsc-msg--ok') : '');
+	}
+
+	function isDlgOpen() {
+		var d = $('nsc-dlg');
+		return !!(d && !d.hidden);
+	}
+
+	function setMsg(text, isErr) {
+		paintMsg($('nsc-msg'), text, isErr);
+		if (isDlgOpen())
+			paintMsg($('nsc-dlg-msg'), text, isErr);
+	}
+
+	function openShopDlg(title) {
+		var d = $('nsc-dlg');
+		if (!d) return;
+		var wasOpen = !d.hidden;
+		if (title && $('nsc-dlg-title'))
+			$('nsc-dlg-title').textContent = title;
+		d.hidden = false;
+		if (!wasOpen)
+			paintMsg($('nsc-dlg-msg'), '', false);
+	}
+
+	function closeShopDlg() {
+		var d = $('nsc-dlg');
+		if (!d) return;
+		d.hidden = true;
+		d.className = 'nros-modal-mask';
+		var cap = $('nsc-dir-captcha');
+		if (cap) cap.hidden = true;
+		hideShopPanels();
+		pendingShop = null;
 	}
 
 	function asBool(v) {
@@ -363,14 +441,15 @@
 		var discBtn = $('nsc-disconnect');
 		if (busy) return;
 		$('nsc-login').disabled = false;
-		discBtn.disabled = !st.connected;
-		connBtn.disabled = !(st.connected || st.account || st.login_account);
-		if (st.connected && st.handshake)
-			connBtn.value = '重新连接';
-		else if (st.connected)
-			connBtn.value = '等待握手';
-		else
-			connBtn.value = '连接';
+		var on = !!st.connected;
+		connBtn.hidden = on;
+		discBtn.hidden = !on;
+		connBtn.disabled = !(st.account || st.login_account);
+		discBtn.disabled = !on;
+		connBtn.value = '连接';
+		connBtn.className = 'nros-btn nros-btn--success';
+		discBtn.value = '断开';
+		discBtn.className = 'nros-btn nros-btn--primary';
 	}
 
 	function renderConn(st) {
@@ -404,7 +483,13 @@
 		var box = $('nsc-dir-captcha');
 		if (!box) return;
 		box.hidden = !show;
-		if (show) refreshCaptcha();
+		if (show) {
+			if (!isDlgOpen())
+				openShopDlg(pendingShop ? (pendingShop.op === 'renew' ? '续费' : '订购') : '网站验证码');
+			refreshCaptcha();
+			var inp = $('nsc-dir-captcha-code');
+			if (inp) try { inp.focus(); } catch (e) {}
+		}
 	}
 
 	function refreshCaptcha() {
@@ -463,6 +548,10 @@
 
 	function openPay(url) {
 		if (!url) return;
+		if (/gogogofuture\.com/i.test(url) && !/alipay\.com/i.test(url)) {
+			setMsg('支付需打开支付宝，未再跳转官网。请重新点订购或续费', true);
+			return;
+		}
 		try { window.open(url, '_blank'); } catch (e) { window.location.href = url; }
 	}
 
@@ -471,6 +560,13 @@
 		if (j.need_captcha) {
 			showCaptcha(true);
 			setMsg(j.msg || '请输入网站验证码', true);
+			return;
+		}
+		if (j.ok && j.pay_local) {
+			showCaptcha(false);
+			pendingShop = null;
+			setMsg((j.msg || '请在新窗口完成支付宝支付') + (j.amount ? '（' + j.amount + '元）' : ''));
+			openPay(U_SHOP_PAYGO);
 			return;
 		}
 		if (j.ok && j.pay_url) {
@@ -529,6 +625,26 @@
 		var rb = $('nsc-shop-renew-box');
 		if (cat) { cat.hidden = true; cat.innerHTML = ''; }
 		if (rb) rb.hidden = true;
+	}
+
+	function showShopCatalog() {
+		var cap = $('nsc-dir-captcha');
+		var rb = $('nsc-shop-renew-box');
+		if (cap) cap.hidden = true;
+		if (rb) rb.hidden = true;
+		openShopDlg('订购');
+		runShop('catalog');
+	}
+
+	function showShopRenew() {
+		var cap = $('nsc-dir-captcha');
+		var cat = $('nsc-shop-catalog');
+		var rb = $('nsc-shop-renew-box');
+		if (cap) cap.hidden = true;
+		if (cat) { cat.hidden = true; cat.innerHTML = ''; }
+		if (rb) rb.hidden = false;
+		openShopDlg('续费');
+		setMsg('请选择续费月数后点「去支付」');
 	}
 
 	function runShop(op, extra) {
@@ -730,6 +846,9 @@
 	function withBusy(btn, work) {
 		if (busy) return;
 		busy = true;
+		var dlg = $('nsc-dlg');
+		if (dlg && !dlg.hidden)
+			dlg.className = 'nros-modal-mask nsc-busy';
 		var btns = [$('nsc-login'), $('nsc-connect'), $('nsc-disconnect'), $('nsc-refresh-account'), $('nsc-dir-captcha-go'), $('nsc-shop-order'), $('nsc-shop-renew'), $('nsc-shop-renew-go')];
 		var old = [];
 		for (var i = 0; i < btns.length; i++) {
@@ -743,6 +862,8 @@
 			busy = false;
 			connecting = false;
 			setDirBusy(false);
+			if (dlg)
+				dlg.className = 'nros-modal-mask';
 			for (var j = 0; j < btns.length; j++) {
 				if (!btns[j]) continue;
 				btns[j].disabled = false;
@@ -828,8 +949,7 @@
 			setMsg('正在登录…');
 			pendingDir = '';
 			pendingShop = null;
-			showCaptcha(false);
-			hideShopPanels();
+			closeShopDlg();
 			if (lastStatus) {
 				lastStatus.two_ways = null;
 				lastStatus.direction = '';
@@ -907,18 +1027,16 @@
 		requestDir(dir, code);
 	};
 	$('nsc-shop-order').onclick = function() {
-		var rb = $('nsc-shop-renew-box');
-		if (rb) rb.hidden = true;
-		runShop('catalog');
+		showShopCatalog();
 	};
 	$('nsc-shop-renew').onclick = function() {
-		var rb = $('nsc-shop-renew-box');
-		if (rb) rb.hidden = !rb.hidden;
+		showShopRenew();
 	};
 	$('nsc-shop-renew-go').onclick = function() {
 		var m = scrub($('nsc-shop-month') && $('nsc-shop-month').value) || '1';
 		runShop('renew', { month: m });
 	};
+	$('nsc-dlg-close').onclick = function() { closeShopDlg(); };
 	$('nsc-shop-catalog').onclick = function(ev) {
 		ev = ev || window.event;
 		var t = ev.target || ev.srcElement;

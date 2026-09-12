@@ -96,7 +96,7 @@
 	function cpeDiagShortDetail(s) {
 		if (!s) return '';
 		s = String(s)
-			.replace(/\/etc\/config\/cpe/g, 'VPN 配置')
+			.replace(/\/etc\/config\/cpe/g, '加速配置')
 			.replace(/\/etc\/cpe_chnroutes/g, '国内路由表')
 			.replace(/\/etc\/[^\s,，;；）)]+/g, '')
 			.replace(/（第 \d+\/\d+ 次）/g, '')
@@ -183,9 +183,9 @@
 		if (data.device_sn) lines.push('出厂 SN：' + data.device_sn);
 		lines.push('诊断状态：已完成');
 		if (data.vpn_healthy)
-			lines.push('VPN 状态：正常');
+			lines.push('跨境加速状态：正常');
 		else
-			lines.push('VPN 状态：异常或未启用');
+			lines.push('跨境加速状态：异常或未启用');
 
 		var faults = data.faults || [];
 		if (faults.length > 0) {
@@ -274,11 +274,11 @@
 		}
 
 		if (data.vpn_healthy) {
-			html += '<p class="cpe-diag-healthy">VPN 服务正常（VPN service healthy）</p>';
+			html += '<p class="cpe-diag-healthy">跨境加速服务正常</p>';
 		} else if (state === 'done' && faults.length === 0 && steps.length > 0) {
 			for (var i = 0; i < steps.length; i++) {
 				if (steps[i].id === 'vpn_enable' && steps[i].status === 'skip') {
-					html += '<p class="cpe-diag-hint"><b>VPN 未启用</b>（开机启动已关闭）</p>';
+					html += '<p class="cpe-diag-hint"><b>跨境加速未启用</b>（开机启动已关闭）</p>';
 					break;
 				}
 			}

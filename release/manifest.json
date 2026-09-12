@@ -1,25 +1,25 @@
 {
-  "tag": "v1.0.8",
-  "version": "1.0.8",
-  "notes": "## 供创未来 1.0.8\n\n- 客户端 `2026091200`：首页 VPN 区显示真实出口 IP（经隧道探测公网地址），不再一直停在「获取中…」\n- 固件含 luci-theme-gogogo 1.0.8 与 luci-app-gogogo 2026091200\n",
+  "tag": "v1.0.12",
+  "version": "1.0.12",
+  "notes": "## 供创未来 1.0.12\n\n- 客户端 `2026091205`：订购 / 续费 / 网站验证码改为悬浮窗；金额按所选套餐下单，不再固定 100 元；仅点窗口右上角关闭\n- 菜单改为「跨境加速」；连接 / 断开按钮与防 DNS 泄露列宽调整\n- 支付宝跳转走套餐页 `/index/index/dobuy_aliapy.html`，与官网订购 / 续费字段一致\n- 固件含 luci-theme-gogogo 1.0.12：双频合一、信号强度三档、无线信道（2.4G 1–13；5G 仅立即可用信道，不含雷达信道）\n",
   "gogogo": {
-    "version": "2026091200",
-    "filename": "luci-app-gogogo_2026091200_all.ipk",
-    "size": 97623,
-    "sha256": "212042f8e8f4baf7a4f9ba936af8eb80e58e3b52f20ce22ebb912b78d12e66a8"
+    "version": "2026091205",
+    "filename": "luci-app-gogogo_2026091205_all.ipk",
+    "size": 99929,
+    "sha256": "063659adbe1b37d0d33335ee1d1a78d30e7f94e6a4d35c52182885305c3e1c40"
   },
   "firmware": {
-    "version": "1.0.8",
+    "version": "1.0.12",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-sysupgrade.bin",
-    "size": 17531698,
-    "sha256": "6b9a780b3e8a3314e5a3d9b5298b2cc676f29fa8bcf04506d849c8fd0eb73916"
+    "size": 17541938,
+    "sha256": "177672449cf0ed5f5777d04990fa8daf8e87934cae052ea3aef1e64242201aa8"
   },
   "factory": {
-    "version": "1.0.8",
+    "version": "1.0.12",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-factory.bin",
     "size": 19136512,
-    "sha256": "9ccc4849009fa5f9fd2f176d076f7de3e6e76230be0946f2ecad2948d7870c54"
+    "sha256": "7ec4c408336b75e208b8132dad25ea1e126cc1cf4c0497963198b7a9b3d661dc"
   }
 }

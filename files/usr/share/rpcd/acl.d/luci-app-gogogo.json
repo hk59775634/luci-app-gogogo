@@ -1,6 +1,6 @@
 {
 	"luci-app-gogogo": {
-		"description": "Grant access to 供创未来 VPN client",
+		"description": "Grant access to 供创未来跨境加速客户端",
 		"read": {
 			"ubus": {
 				"file": [ "exec", "read" ]

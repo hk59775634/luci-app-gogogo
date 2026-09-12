@@ -7,7 +7,7 @@ local jsonc = require "luci.jsonc"
 local dispatcher = require "luci.dispatcher"
 
 function index()
-	entry({"admin", "gogogo"}, firstchild(), "VPN", 60).dependent = false
+	entry({"admin", "gogogo"}, firstchild(), "跨境加速", 60).dependent = false
 	entry({"admin", "gogogo", "config"}, call("action_index"), "跨境加速", 1)
 	entry({"admin", "gogogo", "diagnostics"}, template("gogogo/diagnostics"), "连接诊断", 2)
 	entry({"admin", "gogogo", "status"}, call("action_status")).leaf = true
@@ -22,6 +22,7 @@ function index()
 	entry({"admin", "gogogo", "shop_catalog"}, call("action_shop_catalog")).leaf = true
 	entry({"admin", "gogogo", "shop_buy"}, call("action_shop_buy")).leaf = true
 	entry({"admin", "gogogo", "shop_renew"}, call("action_shop_renew")).leaf = true
+	entry({"admin", "gogogo", "shop_paygo"}, call("action_shop_paygo")).leaf = true
 	entry({"admin", "gogogo", "diag_start"}, call("action_diag_start")).leaf = true
 	entry({"admin", "gogogo", "diag_poll"}, call("action_diag_poll")).leaf = true
 end
@@ -405,4 +406,19 @@ function action_shop_renew()
 	end
 	http.prepare_content("application/json")
 	http.write_json(run_json(cmd))
+end
+
+function action_shop_paygo()
+	local f = io.open("/var/run/gogogo/pay_form.html")
+	http.header("Cache-Control", "no-store, no-cache, must-revalidate")
+	if not f then
+		http.status(404, "Not Found")
+		http.prepare_content("text/html; charset=utf-8")
+		http.write("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>支付已过期</title></head><body><p>支付页已过期，请返回重新下单。</p></body></html>")
+		return
+	end
+	local body = f:read("*a") or ""
+	f:close()
+	http.prepare_content("text/html; charset=utf-8")
+	http.write(body)
 end

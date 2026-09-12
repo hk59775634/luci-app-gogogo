@@ -1,6 +1,6 @@
 {
 	"admin/gogogo": {
-		"title": "VPN",
+		"title": "跨境加速",
 		"order": 60,
 		"action": {
 			"type": "firstchild"

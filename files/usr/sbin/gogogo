@@ -23,6 +23,7 @@ ACCOUNT_REFRESH_MIN_SEC="${CPE_ACCOUNT_REFRESH_MIN_SEC:-60}"
 PORTAL_CJ="/var/run/gogogo/portal.cj"
 PORTAL_CAPTCHA="/var/run/gogogo/portal_captcha.png"
 PORTAL_USER_HTML="/var/run/gogogo/portal_user.html"
+PORTAL_PAY_FORM="/var/run/gogogo/pay_form.html"
 PORTAL_LOCK="/var/run/gogogo/portal.lock"
 PORTAL_BOUND="/var/run/gogogo/portal_account"
 PORTAL_UA="Mozilla/5.0 (Linux; OpenWrt) AppleWebKit/537.36 GogogoCPE"
@@ -1239,7 +1240,7 @@ _portal_cookie_init() {
 }
 
 _portal_drop() {
-	rm -f "$PORTAL_CJ" "$PORTAL_CAPTCHA" "$PORTAL_USER_HTML" "$PORTAL_BOUND"
+	rm -f "$PORTAL_CJ" "$PORTAL_CAPTCHA" "$PORTAL_USER_HTML" "$PORTAL_BOUND" "$PORTAL_PAY_FORM"
 }
 
 _uci_clear_exit() {
@@ -1745,21 +1746,127 @@ _shop_catalog_cmd() {
 }
 
 _shop_pay_post() {
-	local product_id="$1" month="$2"
-	_portal_curl "${portal_url}/index/index/dobuy_wx.html" \
-		-H 'accept: application/json, text/javascript, */*; q=0.01' \
-		-H 'x-requested-with: XMLHttpRequest' \
-		-H 'content-type: application/x-www-form-urlencoded; charset=UTF-8' \
-		-H "origin: ${portal_url}" \
+	local product_id="$1" month="$2" kind="$3"
+	if [ "$kind" = "renew" ]; then
+		_portal_curl "${portal_url}/index/index/dobuy_wx.html" \
+			-H 'accept: application/json, text/javascript, */*; q=0.01' \
+			-H 'x-requested-with: XMLHttpRequest' \
+			-H 'content-type: application/x-www-form-urlencoded; charset=UTF-8' \
+			-H "origin: ${portal_url}" \
+			-H "referer: ${portal_url}/user/index" \
+			--data-urlencode "product_id=${product_id}" \
+			--data-urlencode "month=${month}" \
+			--data-urlencode "country_id=0" \
+			--data-urlencode "area_id=0"
+	else
+		_portal_curl "${portal_url}/index/index/dobuy_wx.html" \
+			-H 'accept: application/json, text/javascript, */*; q=0.01' \
+			-H 'x-requested-with: XMLHttpRequest' \
+			-H 'content-type: application/x-www-form-urlencoded; charset=UTF-8' \
+			-H "origin: ${portal_url}" \
+			-H "referer: ${portal_url}/index/user/product" \
+			--data-urlencode "product_id=${product_id}" \
+			--data-urlencode "month=${month}"
+	fi
+}
+
+_shop_is_cashier_url() {
+	case "$1" in
+		*[Aa]lipay.com* | *[Aa]lipaydev.com*) return 0 ;;
+	esac
+	return 1
+}
+
+_shop_html_error() {
+	sed -n "s/.*class=['\"]error['\"][^>]*>\([^<]*\).*/\1/p" "$1" 2>/dev/null | head -n 1
+}
+
+_shop_is_alipay_form() {
+	[ -s "$1" ] || return 1
+	grep -qE "alipaysubmit|openapi\.alipay\.com|mapi\.alipay\.com" "$1"
+}
+
+_shop_write_pay_form() {
+	local src="$1"
+	{
+		echo '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+		echo '<title>跳转支付宝</title></head><body>'
+		echo '<p style="font-family:sans-serif;padding:16px">正在打开支付宝，请稍候…</p>'
+		cat "$src"
+		echo '</body></html>'
+	} > "$PORTAL_PAY_FORM"
+	chmod 0600 "$PORTAL_PAY_FORM"
+}
+
+_shop_form_amount() {
+	grep -oE 'total_amount":"[0-9.]+' "$1" 2>/dev/null | head -n 1 | sed 's/.*:"//'
+}
+
+_shop_try_pay_body() {
+	local body="$1"
+	local amt
+	if _shop_is_alipay_form "$body"; then
+		amt=$(_shop_form_amount "$body")
+		_shop_write_pay_form "$body"
+		shop_pay_amount="$amt"
+		return 0
+	fi
+	return 1
+}
+
+_shop_fetch_pay_form() {
+	local product_id="$1" month="$2" kind="$3" body err q
+	body="/var/run/gogogo/portal_pay.html"
+	shop_pay_err=""
+	shop_pay_amount=""
+	rm -f "$PORTAL_PAY_FORM" "$body"
+	[ -n "$portal_url" ] || portal_url="${CPE_PORTAL_URL:-https://www.gogogofuture.com}"
+	q="product_id=${product_id}&month=${month}"
+	[ "$kind" = "renew" ] && q="${q}&country_id=0&area_id=0"
+	_portal_curl "${portal_url}/index/index/dobuy_aliapy.html?${q}" \
 		-H "referer: ${portal_url}/index/user/product" \
-		--data-urlencode "product_id=${product_id}" \
-		--data-urlencode "month=${month}" \
-		--data-urlencode "country_id=0" \
-		--data-urlencode "area_id=0"
+		-o "$body" >/dev/null 2>&1 || true
+	if _shop_try_pay_body "$body"; then
+		rm -f "$body"
+		return 0
+	fi
+	if [ "$kind" = "renew" ]; then
+		_portal_curl "${portal_url}/index/index/dobuy_aliapy.html" \
+			-H "content-type: application/x-www-form-urlencoded; charset=UTF-8" \
+			-H "origin: ${portal_url}" \
+			-H "referer: ${portal_url}/user/index" \
+			--data-urlencode "product_id=${product_id}" \
+			--data-urlencode "month=${month}" \
+			--data-urlencode "country_id=0" \
+			--data-urlencode "area_id=0" \
+			-o "$body" >/dev/null 2>&1 || true
+	else
+		_portal_curl "${portal_url}/index/index/dobuy_aliapy.html" \
+			-H "content-type: application/x-www-form-urlencoded; charset=UTF-8" \
+			-H "origin: ${portal_url}" \
+			-H "referer: ${portal_url}/index/user/product" \
+			--data-urlencode "product_id=${product_id}" \
+			--data-urlencode "month=${month}" \
+			-o "$body" >/dev/null 2>&1 || true
+	fi
+	if _shop_try_pay_body "$body"; then
+		rm -f "$body"
+		return 0
+	fi
+	err=$(_shop_html_error "$body")
+	[ -n "$err" ] && shop_pay_err="$err"
+	rm -f "$body"
+	return 1
+}
+
+_shop_local_pay_json() {
+	local msg="${1:-请在新窗口完成支付宝支付}"
+	jq -n --arg msg "$msg" --arg amount "${shop_pay_amount:-}" \
+		'{ok:true,need_captcha:false,pay_local:true,msg:$msg,amount:$amount}'
 }
 
 _shop_pay_result() {
-	local resp="$1" product_id="$2" month="$3" status pay_url pmsg extra
+	local resp="$1" product_id="$2" month="$3" kind="$4" status pay_url pmsg extra
 	if ! echo "$resp" | jq -e . >/dev/null 2>&1; then
 		_shop_json '{"ok":false,"need_captcha":false,"msg":"下单失败"}'
 		return 0
@@ -1767,24 +1874,25 @@ _shop_pay_result() {
 	status=$(echo "$resp" | jq -r '.status // empty' 2>/dev/null)
 	pmsg=$(echo "$resp" | jq -r '.resMessage // .msg // empty' 2>/dev/null)
 	case "$status" in
-		2)
-			pay_url="${portal_url}/index/index/dobuy_aliapy.html?product_id=${product_id}&month=${month}"
-			extra=$(jq -n --arg url "$pay_url" --arg msg "请在新窗口完成支付宝支付" \
-				'{ok:true,need_captcha:false,pay_url:$url,msg:$msg}')
+		2|1)
+			if _shop_fetch_pay_form "$product_id" "$month" "$kind"; then
+				extra=$(_shop_local_pay_json "请在新窗口完成支付宝支付")
+			else
+				extra=$(jq -n --arg msg "${shop_pay_err:-${pmsg:-未能打开与该套餐对应的支付宝订单}}" \
+					'{ok:false,need_captcha:false,msg:$msg}')
+			fi
 			;;
 		3)
 			pay_url=$(echo "$resp" | jq -r '.data // empty' 2>/dev/null)
-			if [ -z "$pay_url" ]; then
-				extra=$(jq -n --arg msg "${pmsg:-未返回支付地址}" '{ok:false,need_captcha:false,msg:$msg}')
-			else
+			if _shop_is_cashier_url "$pay_url"; then
 				extra=$(jq -n --arg url "$pay_url" --arg msg "请在新窗口完成支付" \
 					'{ok:true,need_captcha:false,pay_url:$url,msg:$msg}')
+			elif _shop_fetch_pay_form "$product_id" "$month" "$kind"; then
+				extra=$(_shop_local_pay_json "请在新窗口完成支付宝支付")
+			else
+				extra=$(jq -n --arg msg "${shop_pay_err:-${pmsg:-未返回支付地址}}" \
+					'{ok:false,need_captcha:false,msg:$msg}')
 			fi
-			;;
-		1)
-			pay_url="${portal_url}/index/index/dobuy_aliapy.html?product_id=${product_id}&month=${month}"
-			extra=$(jq -n --arg url "$pay_url" --arg msg "路由器页不支持微信支付，请用支付宝完成" \
-				'{ok:true,need_captcha:false,pay_url:$url,msg:$msg}')
 			;;
 		*)
 			extra=$(jq -n --arg msg "${pmsg:-下单失败}" '{ok:false,need_captcha:false,msg:$msg}')
@@ -1811,8 +1919,8 @@ _shop_buy_cmd() {
 		return 0
 	fi
 	[ "$rc" = 0 ] || return 0
-	resp=$(_shop_pay_post "$product_id" "$month")
-	_shop_pay_result "$resp" "$product_id" "$month"
+	resp=$(_shop_pay_post "$product_id" "$month" "buy")
+	_shop_pay_result "$resp" "$product_id" "$month" "buy"
 }
 
 _shop_renew_cmd() {
@@ -1834,8 +1942,8 @@ _shop_renew_cmd() {
 		[1-9] | 1[0-2]) ;;
 		*) month=1 ;;
 	esac
-	resp=$(_shop_pay_post "$pid" "$month")
-	_shop_pay_result "$resp" "$pid" "$month"
+	resp=$(_shop_pay_post "$pid" "$month" "renew")
+	_shop_pay_result "$resp" "$pid" "$month" "renew"
 }
 
 _shop_status_cmd() {
