@@ -4,7 +4,7 @@
 # --- 软件包元数据 ---
 # 版本号规则见 VERSION.md（前 8 位日期 YYYYMMDD + 后 2 位当日序号 00–99，次日归零）
 CPE_PKG_NAME=luci-app-gogogo
-CPE_PKG_VERSION=2026091108
+CPE_PKG_VERSION=2026091200
 CPE_PKG_TITLE:=供创未来跨境加速客户端
 CPE_PKG_DESCRIPTION:=Login to the GOGOGOFUTURE CPE platform, connect the assigned WireGuard tunnel, and switch split / global / DNS-leak modes.
 

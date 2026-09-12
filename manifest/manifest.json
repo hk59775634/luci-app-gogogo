@@ -1,25 +1,25 @@
 {
-  "tag": "v1.0.7",
-  "version": "1.0.7",
-  "notes": "## 供创未来 1.0.7\n\n- 客户端 `2026091108`：登录后直接列出美国 / 香港；多出口点选换线，单出口提示无法切换，不再「获取出口」或显示「平台分配」\n- 出口切换走 BOSS `set_engress` 接口，无需网站验证码\n- 固件含 luci-theme-gogogo 1.0.7 与 luci-app-gogogo 2026091108\n",
+  "tag": "v1.0.8",
+  "version": "1.0.8",
+  "notes": "## 供创未来 1.0.8\n\n- 客户端 `2026091200`：首页 VPN 区显示真实出口 IP（经隧道探测公网地址），不再一直停在「获取中…」\n- 固件含 luci-theme-gogogo 1.0.8 与 luci-app-gogogo 2026091200\n",
   "gogogo": {
-    "version": "2026091108",
-    "filename": "luci-app-gogogo_2026091108_all.ipk",
-    "size": 96442,
-    "sha256": "c58ccec0c19747ac1d0f6649d0447c049d843939e2cb46090187f7132c96ab72"
+    "version": "2026091200",
+    "filename": "luci-app-gogogo_2026091200_all.ipk",
+    "size": 97623,
+    "sha256": "212042f8e8f4baf7a4f9ba936af8eb80e58e3b52f20ce22ebb912b78d12e66a8"
   },
   "firmware": {
-    "version": "1.0.7",
+    "version": "1.0.8",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-sysupgrade.bin",
     "size": 17531698,
-    "sha256": "5eb898967e1835c637d22f462078bab253438f8e863bc08556b3376289715b58"
+    "sha256": "6b9a780b3e8a3314e5a3d9b5298b2cc676f29fa8bcf04506d849c8fd0eb73916"
   },
   "factory": {
-    "version": "1.0.7",
+    "version": "1.0.8",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-factory.bin",
     "size": 19136512,
-    "sha256": "cc5aaa64ae9a046e7e88e519b247526a3c06104fb3493cbf4f007899b85c4da4"
+    "sha256": "9ccc4849009fa5f9fd2f176d076f7de3e6e76230be0946f2ecad2948d7870c54"
   }
 }

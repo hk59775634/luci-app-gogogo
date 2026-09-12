@@ -27,6 +27,9 @@ PORTAL_LOCK="/var/run/gogogo/portal.lock"
 PORTAL_BOUND="/var/run/gogogo/portal_account"
 PORTAL_UA="Mozilla/5.0 (Linux; OpenWrt) AppleWebKit/537.36 GogogoCPE"
 BOSS_RESP="/var/run/gogogo/boss_engress.json"
+EXIT_IP_FILE="/var/run/gogogo/exit_ip"
+EXIT_IP_PID="/var/run/gogogo/exit_ip.pid"
+EXIT_IP_GEN="/var/run/gogogo/exit_ip.gen"
 
 _load_defaults() {
 	vpname="${VPNAME:-GOGOGO}"
@@ -570,6 +573,7 @@ _add_vpn_routes() {
 _deletevpn() {
 	public_key=""
 	server_ip=""
+	_invalidate_exit_ip
 
 	# 已拆除时不要每轮 restart dnsmasq
 	if ! ip link show "$vpname" >/dev/null 2>&1 && [ ! -f "$DNSMASQ_DROPIN" ]; then
@@ -673,6 +677,7 @@ _connectvpn() {
 	fi
 	uci set "${CPE_UCI}.@default[0].login_status=0"
 	uci commit "$CPE_UCI"
+	_invalidate_exit_ip
 
 	_json_select_server
 	server_ip="$ip"
@@ -1512,6 +1517,7 @@ _apply_after_direction() {
 	rm -f "$API_HASH_FILE"
 	uci set "${CPE_UCI}.@default[0].update_info=1"
 	uci commit "$CPE_UCI"
+	_invalidate_exit_ip
 	[ "$(config_get enable)" = 1 ] || return 1
 	sleep 2
 	_check_config
@@ -1842,6 +1848,122 @@ _json_escape() {
 	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g'
 }
 
+_is_public_ipv4() {
+	local ip a b
+	ip=$(echo "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+	echo "$ip" | grep -qE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' || return 1
+	a=$(echo "$ip" | cut -d. -f1)
+	b=$(echo "$ip" | cut -d. -f2)
+	case "$a" in
+		0 | 10 | 127) return 1 ;;
+		169) [ "$b" = "254" ] && return 1 ;;
+		172) [ "$b" -ge 16 ] 2>/dev/null && [ "$b" -le 31 ] 2>/dev/null && return 1 ;;
+		192) [ "$b" = "168" ] && return 1 ;;
+		224 | 225 | 226 | 227 | 228 | 229 | 230 | 231 | 232 | 233 | 234 | 235 | 236 | 237 | 238 | 239 | 240 | 255) return 1 ;;
+	esac
+	return 0
+}
+
+_exit_ip_gen() {
+	cat "$EXIT_IP_GEN" 2>/dev/null || echo 0
+}
+
+_invalidate_exit_ip() {
+	local n pid
+	_status_dir
+	n=$(_exit_ip_gen)
+	echo $((n + 1)) > "$EXIT_IP_GEN"
+	pid=$(cat "$EXIT_IP_PID" 2>/dev/null)
+	if [ -n "$pid" ]; then
+		kill "$pid" 2>/dev/null || true
+		kill -9 "$pid" 2>/dev/null || true
+	fi
+	rm -f "$EXIT_IP_FILE" "$EXIT_IP_PID"
+}
+
+_iface_private_ip() {
+	local a
+	a=$(uci -q get "network.${vpname}.addresses" | awk '{print $1}')
+	[ -z "$a" ] && a=$(ip -4 -o addr show dev "$vpname" 2>/dev/null | awk '{print $4}' | head -n1)
+	echo "$a" | sed 's|/.*||'
+}
+
+_live_region_of() {
+	case "$(config_get direction)" in
+		us | hk) echo "$(config_get direction)" ;;
+		*) echo assigned ;;
+	esac
+}
+
+_exit_ip_need_fetch() {
+	local ip region ts ifaddr gen now cur
+	ip link show "$vpname" >/dev/null 2>&1 || return 1
+	_vpn_handshake_ok || return 1
+	cur=$(_iface_private_ip)
+	[ -n "$cur" ] || return 1
+	now=$(date +%s)
+	[ -s "$EXIT_IP_FILE" ] || return 0
+	read -r ip region ts ifaddr gen < "$EXIT_IP_FILE" || return 0
+	[ "$ifaddr" = "$cur" ] && [ "$(_exit_ip_gen)" = "$gen" ] || return 0
+	[ -n "$ts" ] || return 0
+	if _is_public_ipv4 "$ip"; then
+		[ $((now - ts)) -ge 600 ] && return 0
+		return 1
+	fi
+	[ $((now - ts)) -ge 15 ] && return 0
+	return 1
+}
+
+_fetch_exit_ip() {
+	local url ip gen addr live
+	ip link show "$vpname" >/dev/null 2>&1 || return 1
+	_vpn_handshake_ok || return 1
+	_status_dir
+	gen=$(_exit_ip_gen)
+	addr=$(_iface_private_ip)
+	live=$(_live_region_of)
+	[ -n "$addr" ] || return 1
+	for url in \
+		https://ipinfo.in/ \
+		http://ipinfo.io/ip \
+		http://ifconfig.me \
+		http://icanhazip.com
+	do
+		ip=$(curl -sS -L --http1.1 -m 6 --connect-timeout 4 \
+			--interface "$vpname" "$url" 2>/dev/null \
+			| tr -d '\r' | sed -n '1s/[[:space:]]*$//p')
+		_is_public_ipv4 "$ip" || continue
+		[ "$(_exit_ip_gen)" = "$gen" ] || return 1
+		[ "$(_iface_private_ip)" = "$addr" ] || return 1
+		printf '%s %s %s %s %s\n' "$ip" "$live" "$(date +%s)" "$addr" "$gen" > "$EXIT_IP_FILE"
+		return 0
+	done
+	[ "$(_exit_ip_gen)" = "$gen" ] || return 1
+	[ "$(_iface_private_ip)" = "$addr" ] || return 1
+	printf '%s %s %s %s %s\n' "-" "$live" "$(date +%s)" "$addr" "$gen" > "$EXIT_IP_FILE"
+	return 1
+}
+
+_exit_ip_busy() {
+	local pid
+	pid=$(cat "$EXIT_IP_PID" 2>/dev/null)
+	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+_maybe_refresh_exit_ip() {
+	ip link show "$vpname" >/dev/null 2>&1 || { rm -f "$EXIT_IP_FILE"; return 0; }
+	_vpn_handshake_ok || return 0
+	_exit_ip_need_fetch || return 0
+	_exit_ip_busy && return 0
+	_status_dir
+	(
+		echo $$ > "$EXIT_IP_PID"
+		_fetch_exit_ip
+		rm -f "$EXIT_IP_PID"
+		_write_status >/dev/null
+	) >/dev/null 2>&1 &
+}
+
 _write_status() {
 	_status_dir
 	_apply_uci_overrides
@@ -1851,6 +1973,7 @@ _write_status() {
 	local want=0 split=1 killswitch=0 block_reason="" expired_text=""
 	local hs now login_pending=0 login_result_json="null"
 	local two_ways_json=null direction="" product_name="" product_id=""
+	local exit_ip="" exit_ip_region="" live_region="" _eip _ereg _ets _eaddr _egen
 
 	enable=$(config_get enable)
 	username=$(config_get username)
@@ -1896,6 +2019,24 @@ _write_status() {
 	fi
 	[ -z "$rx" ] && rx=0
 	[ -z "$tx" ] && tx=0
+	private_ip=$(echo "$private_ip" | sed 's|/.*||')
+
+	if [ "$connected" = 1 ]; then
+		live_region=$(_live_region_of)
+		if [ "$handshake" = 1 ]; then
+			_maybe_refresh_exit_ip
+			if [ -s "$EXIT_IP_FILE" ]; then
+				read -r _eip _ereg _ets _eaddr _egen < "$EXIT_IP_FILE" || true
+				if _is_public_ipv4 "$_eip" && [ "$_eaddr" = "$private_ip" ] && \
+					[ "$(_exit_ip_gen)" = "$_egen" ]; then
+					exit_ip=$_eip
+					exit_ip_region=${_ereg:-$live_region}
+				fi
+			fi
+		fi
+	else
+		rm -f "$EXIT_IP_FILE" 2>/dev/null || true
+	fi
 
 	if [ -f /var/run/gogogo/login.job ]; then
 		login_pending=1
@@ -1906,7 +2047,7 @@ _write_status() {
 	fi
 
 	cat > /var/run/gogogo/status.json <<EOF
-{"ok":true,"enable":$want,"want":$want,"connected":$connected,"handshake":$handshake,"split":$split,"killswitch":$killswitch,"account":"$(_json_escape "$username")","login_account":"$(_json_escape "$username")","description":"$(_json_escape "$description")","expired_text":"$(_json_escape "$expired_text")","login_status":$([ -n "$login_status" ] && echo "$login_status" || echo 0),"block_reason":"$(_json_escape "$block_reason")","iface":"$(_json_escape "$iface")","private_ip":"$(_json_escape "$private_ip")","rx":${rx:-0},"tx":${tx:-0},"region":"assigned","live_region":"$([ "$connected" = 1 ] && echo assigned || echo)","two_ways":$two_ways_json,"direction":"$(_json_escape "$direction")","product_id":"$(_json_escape "$product_id")","product_name":"$(_json_escape "$product_name")","login_pending":$login_pending,"login_result":$login_result_json}
+{"ok":true,"enable":$want,"want":$want,"connected":$connected,"handshake":$handshake,"split":$split,"killswitch":$killswitch,"account":"$(_json_escape "$username")","login_account":"$(_json_escape "$username")","description":"$(_json_escape "$description")","expired_text":"$(_json_escape "$expired_text")","login_status":$([ -n "$login_status" ] && echo "$login_status" || echo 0),"block_reason":"$(_json_escape "$block_reason")","iface":"$(_json_escape "$iface")","private_ip":"$(_json_escape "$private_ip")","rx":${rx:-0},"tx":${tx:-0},"region":"$(_json_escape "${live_region:-assigned}")","live_region":"$(_json_escape "$live_region")","exit_ip":"$(_json_escape "$exit_ip")","exit_ip_region":"$(_json_escape "$exit_ip_region")","two_ways":$two_ways_json,"direction":"$(_json_escape "$direction")","product_id":"$(_json_escape "$product_id")","product_name":"$(_json_escape "$product_name")","login_pending":$login_pending,"login_result":$login_result_json}
 EOF
 	cat /var/run/gogogo/status.json
 }
@@ -1962,6 +2103,7 @@ _start() {
 	while true; do
 		_apply_uci_overrides
 		_check_config
+		_write_status >/dev/null
 		sleep "$main_loop_sec"
 	done
 }
