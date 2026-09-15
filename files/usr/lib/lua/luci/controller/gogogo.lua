@@ -16,6 +16,7 @@ function index()
 	entry({"admin", "gogogo", "disconnect"}, call("action_disconnect")).leaf = true
 	entry({"admin", "gogogo", "save"}, call("action_save")).leaf = true
 	entry({"admin", "gogogo", "refresh_account"}, call("action_refresh_account")).leaf = true
+	entry({"admin", "gogogo", "clear_account"}, call("action_clear_account")).leaf = true
 	entry({"admin", "gogogo", "set_direction"}, call("action_set_direction")).leaf = true
 	entry({"admin", "gogogo", "portal_captcha"}, call("action_portal_captcha")).leaf = true
 	entry({"admin", "gogogo", "shop_status"}, call("action_shop_status")).leaf = true
@@ -156,22 +157,6 @@ local function read_status_cache_json()
 	return "{}"
 end
 
-local function portal_register_url()
-	local portal = "https://www.gogogofuture.com"
-	local f = io.open("/usr/share/gogogo/defaults.sh", "r")
-	if f then
-		for line in f:lines() do
-			local v = line:match("^CPE_PORTAL_URL='([^']*)'")
-			if v and v ~= "" then
-				portal = v
-				break
-			end
-		end
-		f:close()
-	end
-	return portal:gsub("/+$", "") .. "/register"
-end
-
 function action_index()
 	local query_url = http.formvalue("url")
 	if query_url and query_url ~= "" then
@@ -184,8 +169,7 @@ function action_index()
 	end
 	sys.call("/usr/sbin/gogogo-cred sync >/dev/null 2>&1 &")
 	luci.template.render("gogogo/main", {
-		status_cache_json = read_status_cache_json(),
-		register_url = portal_register_url()
+		status_cache_json = read_status_cache_json()
 	})
 end
 
@@ -326,6 +310,11 @@ end
 function action_refresh_account()
 	http.prepare_content("application/json")
 	http.write_json(run_json("/usr/sbin/gogogo refresh_account"))
+end
+
+function action_clear_account()
+	http.prepare_content("application/json")
+	http.write_json(run_json("/usr/sbin/gogogo clear_account"))
 end
 
 function action_set_direction()

@@ -58,6 +58,20 @@ _fw_set_if_changed() {
 	fw_setenv "$var" "$new" >/dev/null 2>&1
 }
 
+_fw_clear() {
+	command -v fw_setenv >/dev/null 2>&1 || return 0
+	fw_setenv "$1" >/dev/null 2>&1 || fw_setenv "$1" "" >/dev/null 2>&1 || true
+}
+
+_clear_account() {
+	uci -q set "${CPE_UCI}.@default[0].username="
+	uci -q set "${CPE_UCI}.@default[0].password="
+	uci -q delete "${CPE_UCI}.@default[0].last_username"
+	uci commit "$CPE_UCI" 2>/dev/null || true
+	_fw_clear "$UBOOT_USER_VAR"
+	_fw_clear "$UBOOT_PASS_VAR"
+}
+
 _persist_uboot() {
 	local user="$1" pass="$2" url="$3"
 	_fw_set_if_changed "$UBOOT_USER_VAR" "$user"
@@ -190,8 +204,14 @@ case "${1:-sync}" in
 			_uci_has_credentials
 		) 9>/tmp/gogogo_cred.lock
 		;;
+	clear)
+		(
+			flock 9 || exit 1
+			_clear_account
+		) 9>/tmp/gogogo_cred.lock
+		;;
 	*)
-		echo "Usage: $0 sync|repair|has" >&2
+		echo "Usage: $0 sync|repair|has|clear" >&2
 		exit 1
 		;;
 esac

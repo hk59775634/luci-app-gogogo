@@ -31,7 +31,6 @@
 	#gogogo-app .nsc-msg--ok { color: var(--nros-success, #2a2); }
 	#gogogo-app .nsc-msg--err { color: var(--nros-danger, #c00); }
 	#gogogo-app .nsc-actions { display: flex; flex-wrap: wrap; gap: .5em; margin-top: .8em; }
-	#gogogo-app #nsc-register[hidden] { display: none !important; }
 	#gogogo-app .nsc-meta,
 	#gogogo-app .nsc-hint { color: var(--nros-text-3, #888); font-size: 85%; }
 	#gogogo-app .nsc-hint { margin-top: 4px; }
@@ -215,8 +214,8 @@
 				</div>
 				<div class="nsc-actions">
 					<input type="button" class="nros-btn nros-btn--primary" id="nsc-login" value="登录" />
-					<a class="nros-btn" id="nsc-register" href="<%=register_url or 'https://www.gogogofuture.com/register'%>" target="_blank" rel="noopener noreferrer">注册</a>
 					<input type="button" class="nros-btn" id="nsc-refresh-account" value="刷新到期时间" />
+					<input type="button" class="nros-btn" id="nsc-clear-account" value="退出登录" />
 				</div>
 				<div class="nsc-toggle">
 					<label class="nros-switch">
@@ -250,10 +249,9 @@
 				</div>
 				<div class="nsc-shop" id="nsc-shop">
 					<div class="nsc-toggle__label">套餐</div>
-					<div class="nsc-meta" id="nsc-shop-info">登录后可查看订购套餐</div>
+					<div class="nsc-meta" id="nsc-shop-info">登录后可查看套餐</div>
 					<div class="nsc-actions">
-						<input type="button" class="nros-btn nros-btn--primary" id="nsc-shop-order" value="订购" />
-						<input type="button" class="nros-btn" id="nsc-shop-renew" value="续费" />
+						<input type="button" class="nros-btn nros-btn--primary" id="nsc-shop-renew" value="续费" />
 					</div>
 				</div>
 			</div>
@@ -333,6 +331,7 @@
 	var U_DISCONNECT = '<%=luci.dispatcher.build_url("admin", "gogogo", "disconnect")%>';
 	var U_SAVE = '<%=luci.dispatcher.build_url("admin", "gogogo", "save")%>';
 	var U_REFRESH = '<%=luci.dispatcher.build_url("admin", "gogogo", "refresh_account")%>';
+	var U_CLEAR = '<%=luci.dispatcher.build_url("admin", "gogogo", "clear_account")%>';
 	var U_SET_DIR = '<%=luci.dispatcher.build_url("admin", "gogogo", "set_direction")%>';
 	var U_CAPTCHA = '<%=luci.dispatcher.build_url("admin", "gogogo", "portal_captcha")%>';
 	var U_SHOP_CATALOG = '<%=luci.dispatcher.build_url("admin", "gogogo", "shop_catalog")%>';
@@ -360,7 +359,7 @@
 			target: 'nsc-step-exits',
 			kicker: '三步连接  2 / 3',
 			title: '再选择出口',
-			body: '登录后直接点美国或香港。多出口会自动换线；单出口会提示无法切换。订购 / 续费在弹出窗口完成，验证码也在窗口内填写。'
+			body: '登录后直接点美国或香港。多出口会自动换线；单出口会提示无法切换。续费在弹出窗口完成，验证码也在窗口内填写。'
 		},
 		{
 			target: 'nsc-step-conn',
@@ -485,7 +484,7 @@
 		box.hidden = !show;
 		if (show) {
 			if (!isDlgOpen())
-				openShopDlg(pendingShop ? (pendingShop.op === 'renew' ? '续费' : '订购') : '网站验证码');
+				openShopDlg(pendingShop ? '续费' : '网站验证码');
 			refreshCaptcha();
 			var inp = $('nsc-dir-captcha-code');
 			if (inp) try { inp.focus(); } catch (e) {}
@@ -535,21 +534,21 @@
 		var renewBtn = $('nsc-shop-renew');
 		if (!info) return;
 		if (!st || !(st.account || st.login_account)) {
-			info.textContent = '登录后可查看订购套餐';
+			info.textContent = '登录后可查看套餐';
 			if (renewBtn) renewBtn.disabled = true;
 			return;
 		}
 		if (st.product_name)
 			info.textContent = st.product_name + (st.expired_text ? ' · ' + st.expired_text : '');
 		else
-			info.textContent = st.expired_text || '未获取到套餐，可点「订购」拉取';
+			info.textContent = st.expired_text || '未获取到套餐，可点「续费」';
 		if (renewBtn) renewBtn.disabled = !st.product_id;
 	}
 
 	function openPay(url) {
 		if (!url) return;
 		if (/gogogofuture\.com/i.test(url) && !/alipay\.com/i.test(url)) {
-			setMsg('支付需打开支付宝，未再跳转官网。请重新点订购或续费', true);
+			setMsg('支付需打开支付宝，未再跳转官网。请重新点续费', true);
 			return;
 		}
 		try { window.open(url, '_blank'); } catch (e) { window.location.href = url; }
@@ -627,15 +626,6 @@
 		if (rb) rb.hidden = true;
 	}
 
-	function showShopCatalog() {
-		var cap = $('nsc-dir-captcha');
-		var rb = $('nsc-shop-renew-box');
-		if (cap) cap.hidden = true;
-		if (rb) rb.hidden = true;
-		openShopDlg('订购');
-		runShop('catalog');
-	}
-
 	function showShopRenew() {
 		var cap = $('nsc-dir-captcha');
 		var cat = $('nsc-shop-catalog');
@@ -651,7 +641,7 @@
 		if (busy) return;
 		extra = extra || {};
 		pendingShop = { op: op, extra: extra };
-		withBusy($('nsc-shop-order'), function(done) {
+		withBusy($('nsc-shop-renew'), function(done) {
 			var fields = {};
 			for (var k in extra) fields[k] = extra[k];
 			var code = shopCode();
@@ -790,8 +780,6 @@
 		renderShop(st);
 		renderDir(st);
 		renderConn(st);
-		var reg = $('nsc-register');
-		if (reg) reg.hidden = !!acc;
 	}
 
 	function scrub(s) {
@@ -849,7 +837,7 @@
 		var dlg = $('nsc-dlg');
 		if (dlg && !dlg.hidden)
 			dlg.className = 'nros-modal-mask nsc-busy';
-		var btns = [$('nsc-login'), $('nsc-connect'), $('nsc-disconnect'), $('nsc-refresh-account'), $('nsc-dir-captcha-go'), $('nsc-shop-order'), $('nsc-shop-renew'), $('nsc-shop-renew-go')];
+		var btns = [$('nsc-login'), $('nsc-connect'), $('nsc-disconnect'), $('nsc-refresh-account'), $('nsc-clear-account'), $('nsc-dir-captcha-go'), $('nsc-shop-renew'), $('nsc-shop-renew-go')];
 		var old = [];
 		for (var i = 0; i < btns.length; i++) {
 			if (!btns[i]) continue;
@@ -941,6 +929,31 @@
 		});
 	};
 
+	$('nsc-clear-account').onclick = function() {
+		if (!window.confirm('即将退出登录。确定退出？'))
+			return;
+		var btn = this;
+		withBusy(btn, function(done) {
+			setMsg('正在退出登录…');
+			pendingDir = '';
+			pendingShop = null;
+			closeShopDlg();
+			post(U_CLEAR, {}, function(j) {
+				if (j && j.ok) {
+					accountFilled = false;
+					$('nsc-account').value = '';
+					$('nsc-password').value = '';
+					if ($('nsc-enable')) $('nsc-enable').checked = false;
+					setMsg(j.msg || '已退出登录');
+				} else {
+					setMsg((j && j.msg) || '退出登录失败', true);
+				}
+				refreshStatus();
+				done();
+			});
+		});
+	};
+
 	$('nsc-login').onclick = function() {
 		var btn = this;
 		var acc = scrub($('nsc-account').value);
@@ -1025,9 +1038,6 @@
 		var dir = pendingDir || (lastStatus && lastStatus.direction) || '';
 		if (!dir) { setMsg('请先选择美国或香港', true); return; }
 		requestDir(dir, code);
-	};
-	$('nsc-shop-order').onclick = function() {
-		showShopCatalog();
 	};
 	$('nsc-shop-renew').onclick = function() {
 		showShopRenew();

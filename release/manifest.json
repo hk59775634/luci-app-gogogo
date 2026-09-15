@@ -1,25 +1,25 @@
 {
-  "tag": "v1.0.12",
-  "version": "1.0.12",
-  "notes": "## 供创未来 1.0.12\n\n- 客户端 `2026091205`：订购 / 续费 / 网站验证码改为悬浮窗；金额按所选套餐下单，不再固定 100 元；仅点窗口右上角关闭\n- 菜单改为「跨境加速」；连接 / 断开按钮与防 DNS 泄露列宽调整\n- 支付宝跳转走套餐页 `/index/index/dobuy_aliapy.html`，与官网订购 / 续费字段一致\n- 固件含 luci-theme-gogogo 1.0.12：双频合一、信号强度三档、无线信道（2.4G 1–13；5G 仅立即可用信道，不含雷达信道）\n",
+  "tag": "v1.0.14",
+  "version": "1.0.14",
+  "notes": "## 供创未来 1.0.14\n\n- 客户端 `2026091504`：去掉注册和订购，套餐区只留续费；续费仍在悬浮窗完成\n- 增加「退出登录」：同时清除 UCI 与 U-Boot 中的账号密码；确认提示为「即将退出登录。确定退出？」\n- 固件含 luci-theme-gogogo 1.0.14 与 luci-app-gogogo 2026091504\n",
   "gogogo": {
-    "version": "2026091205",
-    "filename": "luci-app-gogogo_2026091205_all.ipk",
-    "size": 99929,
-    "sha256": "063659adbe1b37d0d33335ee1d1a78d30e7f94e6a4d35c52182885305c3e1c40"
+    "version": "2026091504",
+    "filename": "luci-app-gogogo_2026091504_all.ipk",
+    "size": 99808,
+    "sha256": "6ec427210d1bb35ddb4afa58926b05802042991e876923d8f5c9793cce2692b2"
   },
   "firmware": {
-    "version": "1.0.12",
+    "version": "1.0.14",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-sysupgrade.bin",
     "size": 17541938,
-    "sha256": "177672449cf0ed5f5777d04990fa8daf8e87934cae052ea3aef1e64242201aa8"
+    "sha256": "7963be524d2684ef38a65144be6f2e0313940542b3dfc0c7c37a5f6f6935985c"
   },
   "factory": {
-    "version": "1.0.12",
+    "version": "1.0.14",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-factory.bin",
     "size": 19136512,
-    "sha256": "7ec4c408336b75e208b8132dad25ea1e126cc1cf4c0497963198b7a9b3d661dc"
+    "sha256": "d11986484695fb111a0f6e03cdd8c22fbcc834f48b4e726e6f9f528d974cc3d5"
   }
 }
