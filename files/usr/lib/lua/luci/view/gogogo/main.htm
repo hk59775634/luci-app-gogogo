@@ -148,7 +148,9 @@
 		padding: 0 4px;
 	}
 	#nsc-shop-catalog[hidden],
-	#nsc-shop-renew-box[hidden] { display: none !important; }
+	#nsc-shop-renew-box[hidden],
+	#nsc-shop-dlg-info[hidden] { display: none !important; }
+	#nsc-shop-dlg-info { margin: 0 0 10px; color: var(--nros-text-2, #4B5563); }
 	.nsc-shop-item {
 		display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
 		padding: .55em 0; border-bottom: 1px solid var(--nros-border, #f0f0f0);
@@ -308,6 +310,7 @@
 		</div>
 		<div class="nros-card__bd">
 			<div id="nsc-dlg-msg" class="nsc-msg"></div>
+			<div id="nsc-shop-dlg-info" class="nsc-meta" hidden></div>
 			<div id="nsc-dir-captcha" class="nsc-dir-captcha" hidden>
 				<img id="nsc-dir-captcha-img" alt="验证码" title="点击刷新" />
 				<input class="nros-input" type="text" id="nsc-dir-captcha-code" maxlength="8" autocomplete="off" placeholder="网站验证码" />
@@ -483,6 +486,7 @@
 		if (!box) return;
 		box.hidden = !show;
 		if (show) {
+			hideShopPanels();
 			if (!isDlgOpen())
 				openShopDlg(pendingShop ? '续费' : '网站验证码');
 			refreshCaptcha();
@@ -532,17 +536,18 @@
 	function renderShop(st) {
 		var info = $('nsc-shop-info');
 		var renewBtn = $('nsc-shop-renew');
+		var logged = !!(st && (st.account || st.login_account));
 		if (!info) return;
-		if (!st || !(st.account || st.login_account)) {
+		if (!logged) {
 			info.textContent = '登录后可查看套餐';
-			if (renewBtn) renewBtn.disabled = true;
+			if (renewBtn && !busy) renewBtn.disabled = true;
 			return;
 		}
 		if (st.product_name)
 			info.textContent = st.product_name + (st.expired_text ? ' · ' + st.expired_text : '');
 		else
 			info.textContent = st.expired_text || '未获取到套餐，可点「续费」';
-		if (renewBtn) renewBtn.disabled = !st.product_id;
+		if (renewBtn && !busy) renewBtn.disabled = false;
 	}
 
 	function openPay(url) {
@@ -575,16 +580,14 @@
 			openPay(j.pay_url);
 			return;
 		}
-		if (j.ok && j.items) {
-			showCaptcha(false);
+		if (j.ok && (j.items || j.product_id)) {
 			pendingShop = null;
-			renderCatalog(j.items);
-			setMsg(j.msg || '请选择套餐');
 			if (j.product_name && lastStatus) {
 				lastStatus.product_name = j.product_name;
 				lastStatus.product_id = j.product_id || lastStatus.product_id;
 				renderShop(lastStatus);
 			}
+			showShopReady(j);
 			return;
 		}
 		setMsg((j && j.msg) || '操作失败', true);
@@ -622,19 +625,44 @@
 	function hideShopPanels() {
 		var cat = $('nsc-shop-catalog');
 		var rb = $('nsc-shop-renew-box');
+		var info = $('nsc-shop-dlg-info');
 		if (cat) { cat.hidden = true; cat.innerHTML = ''; }
 		if (rb) rb.hidden = true;
+		if (info) { info.hidden = true; info.textContent = ''; }
 	}
 
-	function showShopRenew() {
+	function showShopReady(j) {
 		var cap = $('nsc-dir-captcha');
-		var cat = $('nsc-shop-catalog');
+		var info = $('nsc-shop-dlg-info');
 		var rb = $('nsc-shop-renew-box');
+		var pid = j && j.product_id;
+		var name = (j && j.product_name) || (lastStatus && lastStatus.product_name) || '';
+		var exp = (lastStatus && (lastStatus.expired_text || lastStatus.description)) || '';
+		var items = (j && j.items) || [];
 		if (cap) cap.hidden = true;
-		if (cat) { cat.hidden = true; cat.innerHTML = ''; }
-		if (rb) rb.hidden = false;
 		openShopDlg('续费');
-		setMsg('请选择续费月数后点「去支付」');
+		if (info) {
+			if (name || exp)
+				info.textContent = (name || '当前套餐') + (exp ? ' · ' + exp : '');
+			else
+				info.textContent = items.length ? '请选择套餐' : '';
+			info.hidden = !info.textContent;
+		}
+		if (rb) rb.hidden = !pid;
+		if (items.length)
+			renderCatalog(items);
+		else {
+			var cat = $('nsc-shop-catalog');
+			if (cat) { cat.hidden = true; cat.innerHTML = ''; }
+		}
+		if (pid && items.length)
+			setMsg(j.msg || '可续费当前套餐，或选择其他套餐下单');
+		else if (pid)
+			setMsg(j.msg || '请选择续费月数后点「去支付」');
+		else if (items.length)
+			setMsg(j.msg || '请选择套餐');
+		else
+			setMsg((j && j.msg) || '暂无可订购套餐', true);
 	}
 
 	function runShop(op, extra) {
@@ -1040,7 +1068,17 @@
 		requestDir(dir, code);
 	};
 	$('nsc-shop-renew').onclick = function() {
-		showShopRenew();
+		var st = lastStatus || {};
+		if (busy) return;
+		if (!(st.account || st.login_account)) {
+			setMsg('请先登录加速账号', true);
+			return;
+		}
+		hideShopPanels();
+		showCaptcha(false);
+		openShopDlg('续费');
+		setMsg('正在获取套餐…');
+		runShop('catalog');
 	};
 	$('nsc-shop-renew-go').onclick = function() {
 		var m = scrub($('nsc-shop-month') && $('nsc-shop-month').value) || '1';

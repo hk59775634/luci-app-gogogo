@@ -66,12 +66,21 @@ _load_defaults() {
 	dns_local_fallback="${DNS_LOCAL_FALLBACK:-180.76.76.76}"
 }
 
-# 分流国内 DNS：WAN 口 DNS（DHCP/手动）；无 WAN DNS 时用 180.76.76.76
+# 分流国内 DNS：WAN 口 DNS（DHCP/手动）；无可用国内 DNS 时用 180.76.76.76
 _probe_dns_local_1() {
 	local picked
-	[ -x /usr/sbin/gogogo-dns-probe ] || return 0
+	_load_api_dns
+	[ -x /usr/sbin/gogogo-dns-probe ] || {
+		dns_local_1="$dns_local_fallback"
+		return 0
+	}
 	picked=$(/usr/sbin/gogogo-dns-probe pick 2>/dev/null)
-	[ -n "$picked" ] && dns_local_1="$picked" || dns_local_1="$dns_local_fallback"
+	[ -n "$picked" ] || picked="$dns_local_fallback"
+	if [ -n "$dns_remote_1" ] && [ "$picked" = "$dns_remote_1" ]; then
+		logger -t gogogo "wan dns $picked is API overseas DNS, use fallback $dns_local_fallback"
+		picked="$dns_local_fallback"
+	fi
+	dns_local_1="$picked"
 }
 
 config_get() {
@@ -869,14 +878,17 @@ EOF
 		if ! _dnsmasq_supports_split; then
 			logger -t gogogo "dnsmasq lacks chnroutes-file; install dnsmasq with chnroutes support for split DNS"
 		fi
+		if [ ! -f "$chnroute_file" ]; then
+			logger -t gogogo "chnroutes file missing ($chnroute_file); split DNS may not classify China/foreign"
+		fi
 		cat >"$tmp" <<EOF
 # gogogo-vpn: split (国内 ${dns_local_1} / 海外 API ${dns_remote_1})
 no-resolv
 all-servers
 server=${dns_local_1},0
 server=${dns_remote_1},1
-chnroutes-file=${chnroute_file}
 EOF
+		[ -f "$chnroute_file" ] && echo "chnroutes-file=${chnroute_file}" >>"$tmp"
 	fi
 	echo "$tmp"
 }
@@ -939,15 +951,38 @@ EOF
 
 _refresh_dnsmasq() {
 	local tunnelall=0 dnsleak=0
-	_probe_dns_local_1
 	_load_api_dns
+	_probe_dns_local_1
 	_uci_flag tunnelall && tunnelall=1
 	_uci_flag dnsleak && dnsleak=1
 	_apply_dnsmasq "$tunnelall" "$dnsleak"
 }
 
+_dnsmasq_clear_vpn() {
+	local had=0
+	[ -f "$DNSMASQ_DROPIN" ] && had=1
+	command -v iptables >/dev/null 2>&1 && {
+		while iptables -t nat -D PREROUTING -i "$lan_bridge" -p udp --dport 53 \
+			-j DNAT --to "$dns_hijack_to" -m comment --comment "DNS-Hijack" 2>/dev/null; do :; done
+		while iptables -t nat -D PREROUTING -i "$lan_bridge" -p tcp --dport 53 \
+			-j DNAT --to "$dns_hijack_to" -m comment --comment "DNS-Hijack" 2>/dev/null; do :; done
+	}
+	[ "$had" = 1 ] || [ -f "$DNSMASQ_APPLIED_STAMP" ] || return 0
+	rm -f "$DNSMASQ_DROPIN" "$DNSMASQ_DROPIN_LEGACY" "$DNSMASQ_APPLIED_STAMP" \
+		/tmp/gogogo_dns_mode /tmp/dnsmasq.gogogo.conf 2>/dev/null
+	_dnsmasq_cleanup_legacy
+	[ "$had" = 1 ] && /etc/init.d/dnsmasq restart 2>/dev/null
+}
+
 _checkdns() {
-	if ! _vpn_handshake_ok; then
+	# 未启用加速：不要留下 bootstrap/全局 dropin（WAN DNS 变更会走 refresh_routes）
+	if ! _uci_flag enable; then
+		_dnsmasq_clear_vpn
+		return 0
+	fi
+	# 分流不依赖 VPN 握手：始终写 chnroutes。握手失败时若走 bootstrap（单条 server=），
+	# 看起来像全局，WAN ifupdate / 保存后会被误判成「分流被改成全局」。
+	if _uci_flag tunnelall && ! _vpn_handshake_ok; then
 		_apply_dnsmasq_bootstrap
 	else
 		_refresh_dnsmasq
@@ -1919,7 +1954,10 @@ _shop_buy_cmd() {
 		_shop_need_captcha
 		return 0
 	fi
-	[ "$rc" = 0 ] || return 0
+	if [ "$rc" != 0 ]; then
+		_shop_json "$(jq -n --arg msg "${portal_login_msg:-网站登录失败}" '{ok:false,need_captcha:true,msg:$msg}')"
+		return 0
+	fi
 	resp=$(_shop_pay_post "$product_id" "$month" "buy")
 	_shop_pay_result "$resp" "$product_id" "$month" "buy"
 }
@@ -1932,7 +1970,10 @@ _shop_renew_cmd() {
 	case $? in
 		2) _shop_need_captcha; return 0 ;;
 		0) ;;
-		*) return 0 ;;
+		*)
+			_shop_json "$(jq -n --arg msg "${portal_login_msg:-网站登录失败}" '{ok:false,need_captcha:true,msg:$msg}')"
+			return 0
+			;;
 	esac
 	pid=$(config_get product_id)
 	if [ -z "$pid" ]; then
@@ -2261,7 +2302,7 @@ case "$action" in
 	refresh_dns)
 		_apply_uci_overrides
 		rm -f /tmp/gogogo_dns_probe.stamp /tmp/gogogo_dns_local_selected "$DNSMASQ_APPLIED_STAMP"
-		_refresh_dnsmasq
+		_checkdns
 		;;
 	probe_dns)
 		_apply_uci_overrides
@@ -2280,14 +2321,14 @@ case "$action" in
 			_refresh_split_routes
 		fi
 		_add_vpn_routes 2>/dev/null
-		_checkdns
+			_checkdns
 		;;
 	refresh_chnroutes)
 		_apply_uci_overrides
 		rm -f "$CHNROUTES_FETCH_STAMP"
 		[ -x /usr/sbin/gogogo-chnroutes-update ] && /usr/sbin/gogogo-chnroutes-update force
 		_uci_flag tunnelall || _refresh_split_routes
-		_refresh_dnsmasq
+		_checkdns
 		;;
 	route_guard_add)
 		_apply_uci_overrides

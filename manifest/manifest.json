@@ -1,25 +1,25 @@
 {
-  "tag": "v1.0.18",
-  "version": "1.0.18",
-  "notes": "## 供创未来 1.0.18\n\n- 分流模式始终使用 chnroutes DNS（国内 WAN DNS / 海外 API DNS）\n- 防 DNS 泄露不再把分流写成全局 `server=海外DNS`，避免国内域名解析到海外 IP 导致直连失效\n- 固件含 luci-theme-gogogo 1.0.18 与 luci-app-gogogo 2026091602\n",
+  "tag": "v1.0.19",
+  "version": "1.0.19",
+  "notes": "## 供创未来 1.0.19\n\n- 分流模式改 WAN DNS 时不再写成 bootstrap 全局 DNS，始终保持 chnroutes 分流\n- 未启用加速时清掉 VPN DNS 配置，避免改 WAN DNS 留下全局 dropin\n- 海外公共 DNS（如 8.8.8.8）不再用作分流国内上游\n- 续费按钮在加速账号登录后可点；弹窗内先验证码，再展示套餐、续费月数和支付\n- 固件含 luci-theme-gogogo 1.0.19 与 luci-app-gogogo 2026091603\n",
   "gogogo": {
-    "version": "2026091602",
-    "filename": "luci-app-gogogo_2026091602_all.ipk",
-    "size": 99406,
-    "sha256": "2d436115a90dcbb162adac0e5c42cc6bae81d1abdef0aecf36ae274af2696cc5"
+    "version": "2026091603",
+    "filename": "luci-app-gogogo_2026091603_all.ipk",
+    "size": 100579,
+    "sha256": "1b4e68f132186d5789751bbc7aa3fd4fdd9817fced26ca5ac32f8eb77213ed11"
   },
   "firmware": {
-    "version": "1.0.18",
+    "version": "1.0.19",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-sysupgrade.bin",
     "size": 17541938,
-    "sha256": "eaa0b362f65d3d9bce291a85b26e9d250e3b2537f840993394e66c7bc25e04b5"
+    "sha256": "336585f5eb3f76bc76b02d3ad45da55c5faeecf93fa117e789b41ccefa3d71a4"
   },
   "factory": {
-    "version": "1.0.18",
+    "version": "1.0.19",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-factory.bin",
     "size": 19136512,
-    "sha256": "c518b5147439e320d0c40d72d646db6c56e1721fa4d92392b700664fb5915b42"
+    "sha256": "807e2f65099dc57dab19f7b495a28456d259de25af8325115cb1acabd0fd461b"
   }
 }

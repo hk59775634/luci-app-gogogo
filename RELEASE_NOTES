@@ -1,5 +1,7 @@
-## 供创未来 1.0.18
+## 供创未来 1.0.19
 
-- 分流模式始终使用 chnroutes DNS（国内 WAN DNS / 海外 API DNS）
-- 防 DNS 泄露不再把分流写成全局 `server=海外DNS`，避免国内域名解析到海外 IP 导致直连失效
-- 固件含 luci-theme-gogogo 1.0.18 与 luci-app-gogogo 2026091602
+- 分流模式改 WAN DNS 时不再写成 bootstrap 全局 DNS，始终保持 chnroutes 分流
+- 未启用加速时清掉 VPN DNS 配置，避免改 WAN DNS 留下全局 dropin
+- 海外公共 DNS（如 8.8.8.8）不再用作分流国内上游
+- 续费按钮在加速账号登录后可点；弹窗内先验证码，再展示套餐、续费月数和支付
+- 固件含 luci-theme-gogogo 1.0.19 与 luci-app-gogogo 2026091603
