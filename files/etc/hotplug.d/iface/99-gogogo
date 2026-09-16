@@ -1,5 +1,5 @@
 #!/bin/sh
-# WAN/WG ifup: reserved prefixes stay in main table; reconnect or refresh split routes.
+# WAN/WG ifup: reserved prefixes pin to WAN in main (not VPN / LAN).
 
 [ "$ACTION" = ifup ] || [ "$ACTION" = ifupdate ] || exit 0
 

@@ -1,6 +1,6 @@
 #!/bin/sh
 # SSH/管理主机保护：写入 UCI/文件，由 cpe 在策略表内添加 /32（可选）
-# 私网/保留段已由 ROUTE_RESERVED_CIDRS 走 main；本工具仅用于额外 /32 保护
+# 私网/保留段由 ROUTE_RESERVED_CIDRS 钉 WAN（main 表）；本工具仅用于额外 /32 保护
 # 用法: cpe-route-guard on [admin_ip]
 #       cpe-route-guard off [admin_ip]
 

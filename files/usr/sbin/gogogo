@@ -235,6 +235,42 @@ _is_reserved_prefix() {
 	return 1
 }
 
+# 私网/CGNAT/链路本地钉到 WAN。仅 ip rule lookup main 不够：
+# main 里若没有比 VPN 0.0.0.0/1 更长的前缀，10/8 等仍走 GOGOGO。
+_is_wan_pin_cidr() {
+	case "$1" in
+		10.0.0.0/8 | 100.64.0.0/10 | 169.254.0.0/16 | 172.16.0.0/12 | 192.168.0.0/16)
+			return 0
+			;;
+	esac
+	return 1
+}
+
+_pin_reserved_to_wan() {
+	local NET_IF wan_dev gw cidr ok=0
+	network_flush_cache 2>/dev/null
+	network_find_wan NET_IF || NET_IF="wan"
+	network_get_device wan_dev "${NET_IF}"
+	[ -z "$wan_dev" ] && network_get_physdev wan_dev "${NET_IF}" 2>/dev/null
+	[ -z "$wan_dev" ] && wan_dev=$(uci -q get "network.${NET_IF}.device")
+	[ -z "$wan_dev" ] && wan_dev=$(uci -q get "network.${NET_IF}.ifname")
+	network_get_gateway gw "${NET_IF}"
+	[ -n "$wan_dev" ] || {
+		logger -t gogogo "pin reserved: no WAN device"
+		return 1
+	}
+	for cidr in $route_reserved_cidrs; do
+		_is_wan_pin_cidr "$cidr" || continue
+		if [ -n "$gw" ]; then
+			ip route replace "$cidr" via "$gw" dev "$wan_dev" metric "$wan_route_metric" 2>/dev/null || continue
+		else
+			ip route replace "$cidr" dev "$wan_dev" metric "$wan_route_metric" 2>/dev/null || continue
+		fi
+		ok=1
+	done
+	[ "$ok" = 1 ] && logger -t gogogo "pin reserved to WAN dev=$wan_dev gw=${gw:-none}"
+}
+
 _ensure_policy_reserved_rules() {
 	local cidr
 	_cleanup_legacy_route_guard_rules
@@ -243,6 +279,7 @@ _ensure_policy_reserved_rules() {
 		ip rule show pref "$route_reserved_pref" 2>/dev/null | grep -qF "to ${cidr} " && continue
 		ip rule add pref "$route_reserved_pref" to "$cidr" lookup main 2>/dev/null
 	done
+	_pin_reserved_to_wan
 }
 
 _del_policy_reserved_rules() {
@@ -578,6 +615,8 @@ _add_vpn_routes() {
 		ip route add 0.0.0.0/1 dev "$vpname"
 	ip route show 128.0.0.0/1 2>/dev/null | grep -q "dev $vpname" || \
 		ip route add 128.0.0.0/1 dev "$vpname"
+	# /1 会盖住私网；必须在其后写入更长前缀到 WAN
+	_pin_reserved_to_wan
 }
 
 _deletevpn() {
@@ -591,6 +630,7 @@ _deletevpn() {
 		_clear_split_routes
 		_del_policy_rule
 		_del_endpoint_route
+		_pin_reserved_to_wan
 		return 0
 	fi
 
@@ -607,6 +647,7 @@ _deletevpn() {
 	_del_vpn_routes
 	_clear_split_routes
 	_del_policy_rule
+	_pin_reserved_to_wan
 	_stop_legacy_quagga
 	_del_endpoint_route
 	_firewall_del_vpn
@@ -845,6 +886,7 @@ _checkroute() {
 	if [ "$vpnstatus" = "1" ]; then
 		# 握手未就绪/已过期：撤 VPN 路由与策略表（与 bootstrap DNS 一致），保留 endpoint
 		_teardown_vpn_datapath
+		_pin_reserved_to_wan
 		return
 	fi
 
@@ -857,6 +899,7 @@ _checkroute() {
 
 	_protect_mgmt_sessions
 	_add_vpn_routes
+	_pin_reserved_to_wan
 }
 
 _dns_mode_tag() {
@@ -2321,7 +2364,8 @@ case "$action" in
 			_refresh_split_routes
 		fi
 		_add_vpn_routes 2>/dev/null
-			_checkdns
+		_pin_reserved_to_wan
+		_checkdns
 		;;
 	refresh_chnroutes)
 		_apply_uci_overrides
@@ -2381,6 +2425,7 @@ case "$action" in
 		_write_status
 		;;
 	pin_reserved)
+		_apply_uci_overrides
 		_ensure_policy_reserved_rules
 		;;
 	*)
