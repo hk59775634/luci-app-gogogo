@@ -54,7 +54,7 @@ _wan_dns_servers() {
 _probe_stamp() {
 	local wan_dns
 	wan_dns=$(_wan_dns_servers | tr '\n' ' ')
-	echo "wan1 ${wan_dns}" | md5sum | awk '{print $1}'
+	echo "wan4 ${wan_dns}" | md5sum | awk '{print $1}'
 }
 
 # 输出选中的国内上游 DNS（stdout）
@@ -66,8 +66,15 @@ pick_dns_local() {
 	newstamp=$(_probe_stamp)
 	if [ -f "$DNS_PROBE_STAMP" ] && [ "$(cat "$DNS_PROBE_STAMP" 2>/dev/null)" = "$newstamp" ] && \
 		[ -f "$DNS_PROBE_CACHE" ]; then
-		cat "$DNS_PROBE_CACHE"
-		return 0
+		dns=$(cat "$DNS_PROBE_CACHE" 2>/dev/null)
+		case "$dns" in
+			8.8.8.8 | 8.8.4.4 | 1.1.1.1 | 1.0.0.1 | 9.9.9.9 | 149.112.112.112 | 208.67.222.222 | 208.67.220.220 | '')
+				;;
+			*)
+				echo "$dns"
+				return 0
+				;;
+		esac
 	fi
 
 	for dns in $(_wan_dns_servers); do

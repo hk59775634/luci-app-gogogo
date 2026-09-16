@@ -116,6 +116,7 @@ define Build/Prepare
 		$(CPE_STAGING_DIR)/usr/sbin/gogogo-route-guard \
 		$(CPE_STAGING_DIR)/etc/init.d/gogogo \
 		$(CPE_STAGING_DIR)/etc/hotplug.d/iface/99-gogogo
+	chmod 0755 $(CPE_STAGING_DIR)/etc/uci-defaults/40-gogogo-dnsmasq-rebind
 endef
 
 define Build/Configure
@@ -142,7 +143,9 @@ define Package/$(PKG_NAME)/postinst
 			fi
 		fi
 		uci -q delete gogogo.@default[0].ipmode
+		uci -q set dhcp.@dnsmasq[0].rebind_protection=0
 		uci commit gogogo >/dev/null 2>&1 || true
+		uci commit dhcp >/dev/null 2>&1 || true
 		[ -x /usr/sbin/gogogo-cred ] && /usr/sbin/gogogo-cred sync >/dev/null 2>&1 || true
 		/etc/init.d/quagga stop >/dev/null 2>&1 || true
 		/etc/init.d/quagga disable >/dev/null 2>&1 || true

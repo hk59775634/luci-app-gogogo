@@ -21,7 +21,7 @@ wan_gateway() {
 	[ -n "$gw" ] && echo "$gw"
 }
 
-# 过滤明显无效的 DNS（保留网关地址作 DNS，家庭路由常见）
+# 过滤明显无效的 DNS。保留网关/私网地址：子路由场景下这就是内网权威 DNS。
 wan_dns_usable() {
 	local dns
 	for dns in $(wan_dns_list); do

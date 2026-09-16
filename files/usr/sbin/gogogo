@@ -5,6 +5,7 @@
 [ -f /usr/share/gogogo/defaults.sh ] && . /usr/share/gogogo/defaults.sh
 [ -f /usr/share/gogogo/procmgr.sh ] && . /usr/share/gogogo/procmgr.sh
 [ -f /usr/share/gogogo/curl-resolve.sh ] && . /usr/share/gogogo/curl-resolve.sh
+[ -f /usr/share/gogogo/wan-dns.sh ] && . /usr/share/gogogo/wan-dns.sh
 
 CPE_UCI="${CPE_UCI:-gogogo}"
 PID_FILE="${CPE_MAIN_PIDFILE:-/tmp/gogogo.pid}"
@@ -906,17 +907,54 @@ _dns_mode_tag() {
 	echo "${1:-0}:${2:-0}"
 }
 
+_vpn_dns_iface() {
+	ip link show "$vpname" >/dev/null 2>&1 || return 1
+	ip -4 addr show "$vpname" 2>/dev/null | grep -q 'inet ' || return 1
+	echo "$vpname"
+}
+
+_wan_dns_iface() {
+	local NET_IF d
+	network_find_wan NET_IF || NET_IF="wan"
+	network_get_device d "${NET_IF}"
+	[ -z "$d" ] && network_get_physdev d "${NET_IF}" 2>/dev/null
+	[ -z "$d" ] && d=$(uci -q get "network.${NET_IF}.device")
+	[ -z "$d" ] && d=$(uci -q get "network.${NET_IF}.ifname")
+	[ -n "$d" ] && echo "$d"
+}
+
+# $1=ip $2=iface $3=trust(0/1，空则不加)
+_dns_server_line() {
+	local ip="$1" iface="$2" trust="$3" spec="$1"
+	[ -n "$ip" ] || return 1
+	[ -n "$iface" ] && spec="${ip}@${iface}"
+	if [ -n "$trust" ]; then
+		echo "server=${spec},${trust}"
+	else
+		echo "server=${spec}"
+	fi
+}
+
 _write_dnsmasq_conf() {
 	local tunnelall="$1" dnsleak="$2" tmp="/tmp/dnsmasq.gogogo.conf"
-	# 全局：全部走 API 海外 DNS。分流必须写 chnroutes-file（国内 WAN DNS / 海外 API DNS），
+	local wan_dev vpn_dev
+	wan_dev=$(_wan_dns_iface)
+	vpn_dev=$(_vpn_dns_iface)
+	# 全局：全部走 API 海外 DNS（必须从 VPN 口出去，走 WAN 会被 GFW 污染）。
+	# 分流：国内 WAN 口 DNS / 海外 VPN 口 API DNS + chnroutes-file。
 	# 防 DNS 泄露不能改成全局写法，否则国内域名被解析成海外 IP，策略分流失效。
 	if [ "$tunnelall" = "1" ]; then
-		cat >"$tmp" <<EOF
-# gogogo-vpn: remote-only (api dns)
-no-resolv
-all-servers
-server=${dns_remote_1}
-EOF
+		{
+			echo "# gogogo-vpn: remote-only (api dns via VPN)"
+			echo "no-resolv"
+			echo "all-servers"
+			if [ -n "$vpn_dev" ]; then
+				_dns_server_line "$dns_remote_1" "$vpn_dev"
+			else
+				# 隧道未就绪：不要把 8.8.8.8 打到 WAN
+				logger -t gogogo "dnsmasq: VPN down, skip overseas DNS via WAN"
+			fi
+		} >"$tmp"
 	else
 		if ! _dnsmasq_supports_split; then
 			logger -t gogogo "dnsmasq lacks chnroutes-file; install dnsmasq with chnroutes support for split DNS"
@@ -924,14 +962,18 @@ EOF
 		if [ ! -f "$chnroute_file" ]; then
 			logger -t gogogo "chnroutes file missing ($chnroute_file); split DNS may not classify China/foreign"
 		fi
-		cat >"$tmp" <<EOF
-# gogogo-vpn: split (国内 ${dns_local_1} / 海外 API ${dns_remote_1})
-no-resolv
-all-servers
-server=${dns_local_1},0
-server=${dns_remote_1},1
-EOF
-		[ -f "$chnroute_file" ] && echo "chnroutes-file=${chnroute_file}" >>"$tmp"
+		{
+			echo "# gogogo-vpn: split (国内 ${dns_local_1}@${wan_dev:-wan} / 海外 ${dns_remote_1}@${vpn_dev:-vpn})"
+			echo "no-resolv"
+			echo "all-servers"
+			_dns_server_line "$dns_local_1" "$wan_dev" 0
+			if [ -n "$vpn_dev" ]; then
+				_dns_server_line "$dns_remote_1" "$vpn_dev" 1
+			else
+				logger -t gogogo "dnsmasq: VPN down, overseas DNS not bound to WAN (pollution)"
+			fi
+			[ -f "$chnroute_file" ] && echo "chnroutes-file=${chnroute_file}"
+		} >"$tmp"
 	fi
 	echo "$tmp"
 }
@@ -941,6 +983,26 @@ _dnsmasq_cleanup_legacy() {
 	[ -f /etc/dnsmasq.conf ] || return 0
 	grep -q 'conf-dir=/etc/dnsmasq.d' /etc/dnsmasq.conf 2>/dev/null || return 0
 	sed -i '/^conf-dir=\/etc\/dnsmasq\.d$/d' /etc/dnsmasq.conf 2>/dev/null
+}
+
+_dnsmasq_allow_private_answers() {
+	# OpenWrt 默认 --stop-dns-rebind 会丢弃完整保留段（含 RFC1918）应答
+	[ "$(uci -q get dhcp.@dnsmasq[0].rebind_protection)" = "0" ] && return 0
+	uci -q set dhcp.@dnsmasq[0].rebind_protection=0
+	uci commit dhcp
+	return 1
+}
+
+_dnsmasq_drop_conflict_dropins() {
+	local f n=0
+	# 主题 WAN DNS 的无标记 server= 会绕过 chnroutes 过滤
+	for f in /tmp/dnsmasq.d/nros-wan-dns.conf /etc/dnsmasq.d/nros-wan-dns.conf; do
+		[ -f "$f" ] || continue
+		rm -f "$f"
+		n=1
+	done
+	rm -f /tmp/dnsmasq.gogogo.conf /tmp/dnsmasq.gogogo.bootstrap.conf
+	[ "$n" = 1 ]
 }
 
 _dnsmasq_apply() {
@@ -953,42 +1015,53 @@ _dnsmasq_supports_split() {
 }
 
 _apply_dnsmasq() {
-	local tunnelall="$1" dnsleak="$2" tmpconf tmp_md5 dns_md5 last_mode mode_tag applied_md5
+	local tunnelall="$1" dnsleak="$2" tmpconf tmp_md5 dns_md5 last_mode mode_tag applied_md5 dropped=0
 	mkdir -p /tmp/dnsmasq.d
 	_dnsmasq_cleanup_legacy
+	_dnsmasq_allow_private_answers || dropped=1
+	_dnsmasq_drop_conflict_dropins && dropped=1
 	tmpconf=$(_write_dnsmasq_conf "$tunnelall" "$dnsleak")
 	tmp_md5=$(md5sum "$tmpconf" | awk '{print $1}')
 	dns_md5=$(md5sum "$DNSMASQ_DROPIN" 2>/dev/null | awk '{print $1}')
 	applied_md5=$(cat "$DNSMASQ_APPLIED_STAMP" 2>/dev/null)
 	last_mode=$(cat /tmp/gogogo_dns_mode 2>/dev/null)
 	mode_tag=$(_dns_mode_tag "$tunnelall" "$dnsleak")
-	if [ "$tmp_md5" != "$dns_md5" ] || [ "$last_mode" != "$mode_tag" ] || [ "$tmp_md5" != "$applied_md5" ]; then
+	if [ "$dropped" = 1 ] || [ "$tmp_md5" != "$dns_md5" ] || [ "$last_mode" != "$mode_tag" ] || [ "$tmp_md5" != "$applied_md5" ]; then
 		cp "$tmpconf" "$DNSMASQ_DROPIN"
+		rm -f "$tmpconf"
 		echo "$mode_tag" > /tmp/gogogo_dns_mode
 		_dnsmasq_apply
 		echo "$tmp_md5" > "$DNSMASQ_APPLIED_STAMP"
+	else
+		rm -f "$tmpconf"
 	fi
 }
 
 _apply_dnsmasq_bootstrap() {
-	local tmp="/tmp/dnsmasq.gogogo.bootstrap.conf" tmp_md5 dns_md5 applied_md5
+	local tmp="/tmp/dnsmasq.gogogo.bootstrap.conf" tmp_md5 dns_md5 applied_md5 wan_dev dropped=0
 	mkdir -p /tmp/dnsmasq.d
 	_dnsmasq_cleanup_legacy
+	_dnsmasq_allow_private_answers || dropped=1
+	_dnsmasq_drop_conflict_dropins && dropped=1
 	_probe_dns_local_1
-	cat >"$tmp" <<EOF
-# gogogo-vpn: bootstrap (wg handshake pending, no chnroutes split)
-no-resolv
-server=${dns_local_1}
-EOF
+	wan_dev=$(_wan_dns_iface)
+	{
+		echo "# gogogo-vpn: bootstrap (wg handshake pending, no chnroutes split)"
+		echo "no-resolv"
+		_dns_server_line "$dns_local_1" "$wan_dev"
+	} >"$tmp"
 	tmp_md5=$(md5sum "$tmp" 2>/dev/null | awk '{print $1}')
 	dns_md5=$(md5sum "$DNSMASQ_DROPIN" 2>/dev/null | awk '{print $1}')
 	applied_md5=$(cat "$DNSMASQ_APPLIED_STAMP" 2>/dev/null)
-	if [ "$tmp_md5" != "$dns_md5" ] || [ "$(cat /tmp/gogogo_dns_mode 2>/dev/null)" != "bootstrap:0:0" ] || \
+	if [ "$dropped" = 1 ] || [ "$tmp_md5" != "$dns_md5" ] || [ "$(cat /tmp/gogogo_dns_mode 2>/dev/null)" != "bootstrap:0:0" ] || \
 		[ "$tmp_md5" != "$applied_md5" ]; then
 		cp "$tmp" "$DNSMASQ_DROPIN"
+		rm -f "$tmp"
 		echo "bootstrap:0:0" > /tmp/gogogo_dns_mode
 		_dnsmasq_apply
 		echo "$tmp_md5" > "$DNSMASQ_APPLIED_STAMP"
+	else
+		rm -f "$tmp"
 	fi
 }
 
@@ -1012,9 +1085,13 @@ _dnsmasq_clear_vpn() {
 	}
 	[ "$had" = 1 ] || [ -f "$DNSMASQ_APPLIED_STAMP" ] || return 0
 	rm -f "$DNSMASQ_DROPIN" "$DNSMASQ_DROPIN_LEGACY" "$DNSMASQ_APPLIED_STAMP" \
-		/tmp/gogogo_dns_mode /tmp/dnsmasq.gogogo.conf 2>/dev/null
+		/tmp/gogogo_dns_mode /tmp/dnsmasq.gogogo.conf /tmp/dnsmasq.gogogo.bootstrap.conf 2>/dev/null
 	_dnsmasq_cleanup_legacy
-	[ "$had" = 1 ] && /etc/init.d/dnsmasq restart 2>/dev/null
+	if [ -x /usr/sbin/nros-dns-apply ]; then
+		/usr/sbin/nros-dns-apply
+	elif [ "$had" = 1 ]; then
+		/etc/init.d/dnsmasq restart 2>/dev/null
+	fi
 }
 
 _checkdns() {

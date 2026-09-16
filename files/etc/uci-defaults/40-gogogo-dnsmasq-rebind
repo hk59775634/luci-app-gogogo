@@ -1,0 +1,5 @@
+#!/bin/sh
+# 子路由场景：上游 DNS 会返回 RFC1918（内网域名）。OpenWrt 默认 rebind 保护会丢掉这些应答。
+uci -q set dhcp.@dnsmasq[0].rebind_protection=0
+uci commit dhcp
+exit 0
