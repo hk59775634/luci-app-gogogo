@@ -1,5 +1,6 @@
-## 供创未来 1.0.15
+## 供创未来 1.0.16
 
-- 修复 MESH 组网：开启后写入无线回程 BSS、WPS 配对和子路由 ApCli，不再只改 MapMode
-- MESH 页面增加使用引导：主路由 / 子路由接线方式、相同 WiFi 名称密码、两分钟内配对
-- 固件含 luci-theme-gogogo 1.0.15 与 luci-app-gogogo 2026091505
+- 按 MESH 引导保存后会真正重启 EasyMesh、写入无线回程并标好 BSS，不再只改 WiFi 后空转
+- 子路由保存后关闭本机 LAN DHCP，配对时自动把 5G 回程连回主路由
+- 引导补充：保存后先等「状态」变为已启用，再点添加节点 / 加入组网
+- 固件含 luci-theme-gogogo 1.0.16 与 luci-app-gogogo 2026091600

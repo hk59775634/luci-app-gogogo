@@ -1,25 +1,25 @@
 {
-  "tag": "v1.0.15",
-  "version": "1.0.15",
-  "notes": "## 供创未来 1.0.15\n\n- 修复 MESH 组网：开启后写入无线回程 BSS、WPS 配对和子路由 ApCli，不再只改 MapMode\n- MESH 页面增加使用引导：主路由 / 子路由接线方式、相同 WiFi 名称密码、两分钟内配对\n- 固件含 luci-theme-gogogo 1.0.15 与 luci-app-gogogo 2026091505\n",
+  "tag": "v1.0.16",
+  "version": "1.0.16",
+  "notes": "## 供创未来 1.0.16\n\n- 按 MESH 引导保存后会真正重启 EasyMesh、写入无线回程并标好 BSS，不再只改 WiFi 后空转\n- 子路由保存后关闭本机 LAN DHCP，配对时自动把 5G 回程连回主路由\n- 引导补充：保存后先等「状态」变为已启用，再点添加节点 / 加入组网\n- 固件含 luci-theme-gogogo 1.0.16 与 luci-app-gogogo 2026091600\n",
   "gogogo": {
-    "version": "2026091505",
-    "filename": "luci-app-gogogo_2026091505_all.ipk",
-    "size": 99829,
-    "sha256": "4e0ab2bd0f4cae91fba88d0b53c4b98b04aa413de11bc49c5930802fc193a3f6"
+    "version": "2026091600",
+    "filename": "luci-app-gogogo_2026091600_all.ipk",
+    "size": 100169,
+    "sha256": "fd7d68df71a1399b23198378f46398859a5324367cdb29dd4fa2e9b17c0aece3"
   },
   "firmware": {
-    "version": "1.0.15",
+    "version": "1.0.16",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-sysupgrade.bin",
     "size": 17541938,
-    "sha256": "3d7febd43f7f5ae2dca71caa9acf1514171a2b88e418bfd35d8bcd521a85cb3d"
+    "sha256": "08e39db4af32d8ace18ece38aa9d7264e41307fcee5e842c546aa3330971ad9f"
   },
   "factory": {
-    "version": "1.0.15",
+    "version": "1.0.16",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-factory.bin",
     "size": 19136512,
-    "sha256": "a4af7e81a68b1c9fc054c73c44e3bdcef469b1686e4263a366cdc5d1f5e623b3"
+    "sha256": "65b4e806cb9527873bb72648009cfea497915fa2e029649230663cfd644aaa40"
   }
 }
