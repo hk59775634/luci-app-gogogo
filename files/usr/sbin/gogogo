@@ -66,7 +66,7 @@ _load_defaults() {
 	dns_local_fallback="${DNS_LOCAL_FALLBACK:-180.76.76.76}"
 }
 
-# 优先 WAN DNS，经 baidu + chnroutes 校验；失败则用后备 180.76.76.76
+# 分流国内 DNS：WAN 口 DNS（DHCP/手动）；无 WAN DNS 时用 180.76.76.76
 _probe_dns_local_1() {
 	local picked
 	[ -x /usr/sbin/gogogo-dns-probe ] || return 0

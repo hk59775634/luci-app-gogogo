@@ -1,6 +1,5 @@
-## 供创未来 1.0.16
+## 供创未来 1.0.17
 
-- 按 MESH 引导保存后会真正重启 EasyMesh、写入无线回程并标好 BSS，不再只改 WiFi 后空转
-- 子路由保存后关闭本机 LAN DHCP，配对时自动把 5G 回程连回主路由
-- 引导补充：保存后先等「状态」变为已启用，再点添加节点 / 加入组网
-- 固件含 luci-theme-gogogo 1.0.16 与 luci-app-gogogo 2026091600
+- 分流模式国内 DNS 上游改为 WAN 口 DNS（DHCP 或手动指定）
+- 仅当 WAN 没有可用 DNS 时，才使用 180.76.76.76 作为后备
+- 固件含 luci-theme-gogogo 1.0.17 与 luci-app-gogogo 2026091601
