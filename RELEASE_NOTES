@@ -1,7 +1,5 @@
-## 供创未来 1.0.21
+## 供创未来 1.0.22
 
-- 分流 DNS：完整保留地址（0/8、10/8、100.64/10、127/8、169.254/16、172.16/12、192.168/16、224/4、240/4）按直连处理，WAN/内网 DNS 的应答保留，海外 DNS 的同类应答丢弃，避免内网域名解析失败
-- 关闭 dnsmasq rebind 保护，允许上游返回 RFC1918
-- 加速开启时不再写入 nros-wan-dns.conf，避免无标记 server= 绕过 chnroutes
-- 海外 DNS 绑定 VPN 接口，避免走 WAN 被污染
-- 固件含 luci-theme-gogogo 1.0.21、luci-app-gogogo 2026091605，以及接受完整保留段的 dnsmasq
+- 分流 DNS 的 server= 不再绑定网卡（去掉 @eth1/@GOGOGO），只写 IP 和分组标记
+- WAN 上全部可用 DNS 都写入 gogogo-vpn.conf 作为国内上游，不再只取一台，避免内网多 DNS 用途丢失
+- 固件含 luci-theme-gogogo 1.0.22、luci-app-gogogo 2026091606

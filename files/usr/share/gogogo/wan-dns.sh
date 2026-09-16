@@ -31,3 +31,21 @@ wan_dns_usable() {
 		echo "$dns"
 	done | awk '!seen[$0]++ { print }'
 }
+
+wan_dns_is_overseas_public() {
+	case "$1" in
+		8.8.8.8 | 8.8.4.4 | 1.1.1.1 | 1.0.0.1 | 9.9.9.9 | 149.112.112.112 | 208.67.222.222 | 208.67.220.220)
+			return 0
+			;;
+	esac
+	return 1
+}
+
+# 分流国内上游：WAN 上全部可用 DNS（排除海外公共解析器）。内网可能有多台、用途不同，不能只留一台。
+wan_dns_direct() {
+	local dns
+	for dns in $(wan_dns_usable); do
+		wan_dns_is_overseas_public "$dns" && continue
+		echo "$dns"
+	done | awk '!seen[$0]++ { print }'
+}

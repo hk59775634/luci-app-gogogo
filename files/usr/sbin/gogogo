@@ -923,25 +923,38 @@ _wan_dns_iface() {
 	[ -n "$d" ] && echo "$d"
 }
 
-# $1=ip $2=iface $3=trust(0/1，空则不加)
+# $1=ip $2=iface（仅注释用，不写入 server=） $3=trust(0/1，空则不加)
+# server= 不加 @iface：接口绑定会让内网 DNS / 分流失效。
 _dns_server_line() {
-	local ip="$1" iface="$2" trust="$3" spec="$1"
+	local ip="$1" trust="$3"
 	[ -n "$ip" ] || return 1
-	[ -n "$iface" ] && spec="${ip}@${iface}"
 	if [ -n "$trust" ]; then
-		echo "server=${spec},${trust}"
+		echo "server=${ip},${trust}"
 	else
-		echo "server=${spec}"
+		echo "server=${ip}"
 	fi
+}
+
+# 分流国内上游：WAN 全部 DNS；没有可用的才回退单台 180.76.76.76
+_wan_direct_dns_list() {
+	local dns had=0
+	for dns in $(wan_dns_direct 2>/dev/null); do
+		[ -n "$dns" ] || continue
+		[ -n "$dns_remote_1" ] && [ "$dns" = "$dns_remote_1" ] && continue
+		echo "$dns"
+		had=1
+	done
+	[ "$had" = 1 ] || echo "${dns_local_1:-${dns_local_fallback:-180.76.76.76}}"
 }
 
 _write_dnsmasq_conf() {
 	local tunnelall="$1" dnsleak="$2" tmp="/tmp/dnsmasq.gogogo.conf"
-	local wan_dev vpn_dev
+	local wan_dev vpn_dev dns locals
 	wan_dev=$(_wan_dns_iface)
 	vpn_dev=$(_vpn_dns_iface)
+	locals=$(_wan_direct_dns_list)
 	# 全局：全部走 API 海外 DNS（必须从 VPN 口出去，走 WAN 会被 GFW 污染）。
-	# 分流：国内 WAN 口 DNS / 海外 VPN 口 API DNS + chnroutes-file。
+	# 分流：国内 WAN 口全部 DNS / 海外 API DNS + chnroutes-file。
 	# 防 DNS 泄露不能改成全局写法，否则国内域名被解析成海外 IP，策略分流失效。
 	if [ "$tunnelall" = "1" ]; then
 		{
@@ -963,10 +976,12 @@ _write_dnsmasq_conf() {
 			logger -t gogogo "chnroutes file missing ($chnroute_file); split DNS may not classify China/foreign"
 		fi
 		{
-			echo "# gogogo-vpn: split (国内 ${dns_local_1}@${wan_dev:-wan} / 海外 ${dns_remote_1}@${vpn_dev:-vpn})"
+			echo "# gogogo-vpn: split (国内 $(echo $locals)@${wan_dev:-wan} / 海外 ${dns_remote_1}@${vpn_dev:-vpn})"
 			echo "no-resolv"
 			echo "all-servers"
-			_dns_server_line "$dns_local_1" "$wan_dev" 0
+			for dns in $locals; do
+				_dns_server_line "$dns" "" 0
+			done
 			if [ -n "$vpn_dev" ]; then
 				_dns_server_line "$dns_remote_1" "$vpn_dev" 1
 			else
@@ -1048,7 +1063,10 @@ _apply_dnsmasq_bootstrap() {
 	{
 		echo "# gogogo-vpn: bootstrap (wg handshake pending, no chnroutes split)"
 		echo "no-resolv"
-		_dns_server_line "$dns_local_1" "$wan_dev"
+		echo "all-servers"
+		for dns in $(_wan_direct_dns_list); do
+			_dns_server_line "$dns" "$wan_dev"
+		done
 	} >"$tmp"
 	tmp_md5=$(md5sum "$tmp" 2>/dev/null | awk '{print $1}')
 	dns_md5=$(md5sum "$DNSMASQ_DROPIN" 2>/dev/null | awk '{print $1}')
@@ -1100,7 +1118,7 @@ _checkdns() {
 		_dnsmasq_clear_vpn
 		return 0
 	fi
-	# 分流不依赖 VPN 握手：始终写 chnroutes。握手失败时若走 bootstrap（单条 server=），
+	# 分流不依赖 VPN 握手：始终写 chnroutes。握手失败时若走 bootstrap（仅 WAN DNS），
 	# 看起来像全局，WAN ifupdate / 保存后会被误判成「分流被改成全局」。
 	if _uci_flag tunnelall && ! _vpn_handshake_ok; then
 		_apply_dnsmasq_bootstrap

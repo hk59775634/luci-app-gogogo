@@ -67,25 +67,19 @@ pick_dns_local() {
 	if [ -f "$DNS_PROBE_STAMP" ] && [ "$(cat "$DNS_PROBE_STAMP" 2>/dev/null)" = "$newstamp" ] && \
 		[ -f "$DNS_PROBE_CACHE" ]; then
 		dns=$(cat "$DNS_PROBE_CACHE" 2>/dev/null)
-		case "$dns" in
-			8.8.8.8 | 8.8.4.4 | 1.1.1.1 | 1.0.0.1 | 9.9.9.9 | 149.112.112.112 | 208.67.222.222 | 208.67.220.220 | '')
-				;;
-			*)
-				echo "$dns"
-				return 0
-				;;
-		esac
+		if [ -n "$dns" ] && ! wan_dns_is_overseas_public "$dns"; then
+			echo "$dns"
+			return 0
+		fi
 	fi
 
 	for dns in $(_wan_dns_servers); do
 		[ -n "$dns" ] || continue
 		# 海外公共 DNS 不能当分流国内上游，否则 chnroutes 分组退化成全局
-		case "$dns" in
-			8.8.8.8 | 8.8.4.4 | 1.1.1.1 | 1.0.0.1 | 9.9.9.9 | 149.112.112.112 | 208.67.222.222 | 208.67.220.220)
-				_log "skip $dns: overseas public resolver"
-				continue
-				;;
-		esac
+		if wan_dns_is_overseas_public "$dns"; then
+			_log "skip $dns: overseas public resolver"
+			continue
+		fi
 		chosen="$dns"
 		reason="wan"
 		break

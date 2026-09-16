@@ -1,25 +1,25 @@
 {
-  "tag": "v1.0.21",
-  "version": "1.0.21",
-  "notes": "## 供创未来 1.0.21\n\n- 分流 DNS：完整保留地址（0/8、10/8、100.64/10、127/8、169.254/16、172.16/12、192.168/16、224/4、240/4）按直连处理，WAN/内网 DNS 的应答保留，海外 DNS 的同类应答丢弃，避免内网域名解析失败\n- 关闭 dnsmasq rebind 保护，允许上游返回 RFC1918\n- 加速开启时不再写入 nros-wan-dns.conf，避免无标记 server= 绕过 chnroutes\n- 海外 DNS 绑定 VPN 接口，避免走 WAN 被污染\n- 固件含 luci-theme-gogogo 1.0.21、luci-app-gogogo 2026091605，以及接受完整保留段的 dnsmasq\n",
+  "tag": "v1.0.22",
+  "version": "1.0.22",
+  "notes": "## 供创未来 1.0.22\n\n- 分流 DNS 的 server= 不再绑定网卡（去掉 @eth1/@GOGOGO），只写 IP 和分组标记\n- WAN 上全部可用 DNS 都写入 gogogo-vpn.conf 作为国内上游，不再只取一台，避免内网多 DNS 用途丢失\n- 固件含 luci-theme-gogogo 1.0.22、luci-app-gogogo 2026091606\n",
   "gogogo": {
-    "version": "2026091605",
-    "filename": "luci-app-gogogo_2026091605_all.ipk",
-    "size": 101536,
-    "sha256": "6d1f1a7c0e7fe67aa77a198e2abf5ec27c87745cfc1ba6a3ad1ba7304f7d17cf"
+    "version": "2026091606",
+    "filename": "luci-app-gogogo_2026091606_all.ipk",
+    "size": 101909,
+    "sha256": "d7e330f1464b205403d11a5229e1ae2828df2b63a98c25b7167428b33d715c92"
   },
   "firmware": {
-    "version": "1.0.21",
+    "version": "1.0.22",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-sysupgrade.bin",
     "size": 17541938,
-    "sha256": "2c388bb66398cc27336e4cf47a403e45b01cbb7dfb4e454da8903a6d161e3556"
+    "sha256": "93d63d963ea8e806802a66689661657e5eacdd0b475809b849032ef29c903d4e"
   },
   "factory": {
-    "version": "1.0.21",
+    "version": "1.0.22",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-factory.bin",
     "size": 19136512,
-    "sha256": "d552fe9a739b750b0dba05acf59b41ab1458c02727a328a60c2a923c3e8204cd"
+    "sha256": "457994217249172a15a9e29d7c3e7ccc5cc415c1ec36f92ca493aaef03641944"
   }
 }
