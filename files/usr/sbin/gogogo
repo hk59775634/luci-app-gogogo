@@ -856,8 +856,9 @@ _dns_mode_tag() {
 
 _write_dnsmasq_conf() {
 	local tunnelall="$1" dnsleak="$2" tmp="/tmp/dnsmasq.gogogo.conf"
-	# 全局 / 防 DNS 泄露：仅 API 海外 DNS（dns_remote_1）
-	if [ "$tunnelall" = "1" ] || [ "$dnsleak" = "1" ]; then
+	# 全局：全部走 API 海外 DNS。分流必须写 chnroutes-file（国内 WAN DNS / 海外 API DNS），
+	# 防 DNS 泄露不能改成全局写法，否则国内域名被解析成海外 IP，策略分流失效。
+	if [ "$tunnelall" = "1" ]; then
 		cat >"$tmp" <<EOF
 # gogogo-vpn: remote-only (api dns)
 no-resolv

@@ -1,5 +1,5 @@
-## 供创未来 1.0.17
+## 供创未来 1.0.18
 
-- 分流模式国内 DNS 上游改为 WAN 口 DNS（DHCP 或手动指定）
-- 仅当 WAN 没有可用 DNS 时，才使用 180.76.76.76 作为后备
-- 固件含 luci-theme-gogogo 1.0.17 与 luci-app-gogogo 2026091601
+- 分流模式始终使用 chnroutes DNS（国内 WAN DNS / 海外 API DNS）
+- 防 DNS 泄露不再把分流写成全局 `server=海外DNS`，避免国内域名解析到海外 IP 导致直连失效
+- 固件含 luci-theme-gogogo 1.0.18 与 luci-app-gogogo 2026091602

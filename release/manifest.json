@@ -1,25 +1,25 @@
 {
-  "tag": "v1.0.17",
-  "version": "1.0.17",
-  "notes": "## 供创未来 1.0.17\n\n- 分流模式国内 DNS 上游改为 WAN 口 DNS（DHCP 或手动指定）\n- 仅当 WAN 没有可用 DNS 时，才使用 180.76.76.76 作为后备\n- 固件含 luci-theme-gogogo 1.0.17 与 luci-app-gogogo 2026091601\n",
+  "tag": "v1.0.18",
+  "version": "1.0.18",
+  "notes": "## 供创未来 1.0.18\n\n- 分流模式始终使用 chnroutes DNS（国内 WAN DNS / 海外 API DNS）\n- 防 DNS 泄露不再把分流写成全局 `server=海外DNS`，避免国内域名解析到海外 IP 导致直连失效\n- 固件含 luci-theme-gogogo 1.0.18 与 luci-app-gogogo 2026091602\n",
   "gogogo": {
-    "version": "2026091601",
-    "filename": "luci-app-gogogo_2026091601_all.ipk",
-    "size": 99681,
-    "sha256": "31fa337ef0fc83c63e35fc176247b8d635188936aa1a9e72793c0e0744bb7325"
+    "version": "2026091602",
+    "filename": "luci-app-gogogo_2026091602_all.ipk",
+    "size": 99406,
+    "sha256": "2d436115a90dcbb162adac0e5c42cc6bae81d1abdef0aecf36ae274af2696cc5"
   },
   "firmware": {
-    "version": "1.0.17",
+    "version": "1.0.18",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-sysupgrade.bin",
     "size": 17541938,
-    "sha256": "fc335bfb881f74b1055e6e6ca98d23ca13e35e479101d3420580b89502f97c03"
+    "sha256": "eaa0b362f65d3d9bce291a85b26e9d250e3b2537f840993394e66c7bc25e04b5"
   },
   "factory": {
-    "version": "1.0.17",
+    "version": "1.0.18",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-factory.bin",
     "size": 19136512,
-    "sha256": "3f335052210cb92e18a1b8810ca40000aa4b86528fa10be74290ae9dc55c20f1"
+    "sha256": "c518b5147439e320d0c40d72d646db6c56e1721fa4d92392b700664fb5915b42"
   }
 }

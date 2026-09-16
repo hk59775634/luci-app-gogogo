@@ -244,7 +244,7 @@
 					</label>
 					<div>
 						<div class="nsc-toggle__label">防 DNS 泄露</div>
-						<div class="nsc-hint">开启后 DNS 仅走海外解析，不做国内/海外 DNS 分流。可与全局一起用；分流时国内 IP 仍直连，但域名解析走海外。默认关闭。</div>
+						<div class="nsc-hint">防止加速异常时，本该走隧道的流量和 DNS 从 WAN 泄漏。局域网始终本地。分流模式下国内域名仍按 chnroutes 分流解析，不会改成全局 DNS。默认关闭。</div>
 					</div>
 				</div>
 				<div class="nsc-shop" id="nsc-shop">
