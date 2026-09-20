@@ -22,6 +22,8 @@ PKG_NAME="$(_env_val CPE_PKG_NAME)"
 IPK=""
 SYSUPGRADE=""
 FACTORY=""
+FIP=""
+THEME_IPK=""
 FW_VER=""
 NOTES_FILE="$ROOT/RELEASE_NOTES"
 PUSH_GIT=0
@@ -32,12 +34,14 @@ while [ $# -gt 0 ]; do
 		--ipk) IPK=$2; shift 2 ;;
 		--sysupgrade) SYSUPGRADE=$2; shift 2 ;;
 		--factory) FACTORY=$2; shift 2 ;;
+		--fip) FIP=$2; shift 2 ;;
+		--theme-ipk) THEME_IPK=$2; shift 2 ;;
 		--fw-version) FW_VER=$2; shift 2 ;;
 		--board) BOARD=$2; shift 2 ;;
 		--notes-file) NOTES_FILE=$2; shift 2 ;;
 		--push) PUSH_GIT=1; shift ;;
 		-h|--help)
-			echo "Usage: $0 --ipk <app.ipk> [--sysupgrade <sysupgrade.bin>] [--factory <factory.bin>] [--fw-version X] [--push]" >&2
+			echo "Usage: $0 --ipk <app.ipk> [--sysupgrade <sysupgrade.bin>] [--factory <factory.bin>] [--fip <fip.bin>] [--theme-ipk <theme.ipk>] [--fw-version X] [--push]" >&2
 			exit 0
 			;;
 		*) echo "Unknown arg: $1" >&2; exit 1 ;;
@@ -60,6 +64,14 @@ fi
 }
 [ -z "$FACTORY" ] || [ -f "$FACTORY" ] || {
 	echo "error: --factory not found: $FACTORY" >&2
+	exit 1
+}
+[ -z "$FIP" ] || [ -f "$FIP" ] || {
+	echo "error: --fip not found: $FIP" >&2
+	exit 1
+}
+[ -z "$THEME_IPK" ] || [ -f "$THEME_IPK" ] || {
+	echo "error: --theme-ipk not found: $THEME_IPK" >&2
 	exit 1
 }
 
@@ -101,6 +113,18 @@ if [ -n "$FACTORY" ]; then
 	FACT_SHA=$(sha256sum "$FACTORY" | awk '{print $1}')
 	FACT_SIZE=$(wc -c <"$FACTORY" | tr -d ' ')
 	cp -f "$FACTORY" "$ROOT/release/$FACT_NAME"
+fi
+
+FIP_NAME=""
+if [ -n "$FIP" ]; then
+	FIP_NAME=$(basename "$FIP")
+	cp -f "$FIP" "$ROOT/release/$FIP_NAME"
+fi
+
+THEME_NAME=""
+if [ -n "$THEME_IPK" ]; then
+	THEME_NAME=$(basename "$THEME_IPK")
+	cp -f "$THEME_IPK" "$ROOT/release/$THEME_NAME"
 fi
 
 MANIFEST_JSON="$ROOT/manifest/manifest.json"
@@ -149,7 +173,7 @@ cp -f "$MANIFEST_JSON" "$ROOT/release/manifest.json"
 echo "app version.json: $ROOT/manifest/version.json"
 echo "ui manifest.json: $MANIFEST_JSON"
 echo "app=$APP_VER firmware=$FW_VER tag=v${FW_VER}"
-echo "release/: version.json manifest.json $IPK_NAME ${SYSU_NAME} ${FACT_NAME}"
+echo "release/: version.json manifest.json $IPK_NAME ${SYSU_NAME} ${FACT_NAME} ${FIP_NAME} ${THEME_NAME}"
 
 if [ "$PUSH_GIT" != 1 ]; then
 	echo ""
@@ -173,6 +197,8 @@ git push -f origin "$TAG"
 ASSETS="release/version.json release/manifest.json release/${IPK_NAME}"
 [ -n "$SYSU_NAME" ] && ASSETS="$ASSETS release/${SYSU_NAME}"
 [ -n "$FACT_NAME" ] && ASSETS="$ASSETS release/${FACT_NAME}"
+[ -n "$FIP_NAME" ] && ASSETS="$ASSETS release/${FIP_NAME}"
+[ -n "$THEME_NAME" ] && ASSETS="$ASSETS release/${THEME_NAME}"
 
 if command -v gh >/dev/null 2>&1; then
 	gh release delete "$TAG" -R "$REPO_SLUG" -y 2>/dev/null || true

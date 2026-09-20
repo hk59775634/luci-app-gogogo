@@ -1,25 +1,25 @@
 {
-  "tag": "v1.0.22",
-  "version": "1.0.22",
-  "notes": "## 供创未来 1.0.22\n\n- 分流 DNS 的 server= 不再绑定网卡（去掉 @eth1/@GOGOGO），只写 IP 和分组标记\n- WAN 上全部可用 DNS 都写入 gogogo-vpn.conf 作为国内上游，不再只取一台，避免内网多 DNS 用途丢失\n- 固件含 luci-theme-gogogo 1.0.22、luci-app-gogogo 2026091606\n",
+  "tag": "v1.0.23",
+  "version": "1.0.23",
+  "notes": "## 供创未来 1.0.23\n\n- 单槽设备在线升级 `sysupgrade` 后，更新页可选切换到双系统；不点也可继续使用和升级\n- 点「升级到双系统」会按顺序刷 factory 五卷并写入双系统 FIP（不改 BL2）\n- VPN 账号写入 U-Boot env，切换后可恢复\n- A/B 预留：内核 16 MiB、rootfs 29 MiB、共享 overlay 16 MiB\n- 固件含 luci-theme-gogogo 1.0.23、luci-app-gogogo 2026092000\n",
   "gogogo": {
-    "version": "2026091606",
-    "filename": "luci-app-gogogo_2026091606_all.ipk",
-    "size": 101909,
-    "sha256": "d7e330f1464b205403d11a5229e1ae2828df2b63a98c25b7167428b33d715c92"
+    "version": "2026092000",
+    "filename": "luci-app-gogogo_2026092000_all.ipk",
+    "size": 89840,
+    "sha256": "8d341ca87cc445685b4aa3c7ed9155514b7efb606369256deb1cfbb16f33988f"
   },
   "firmware": {
-    "version": "1.0.22",
+    "version": "1.0.23",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-sysupgrade.bin",
-    "size": 17541938,
-    "sha256": "93d63d963ea8e806802a66689661657e5eacdd0b475809b849032ef29c903d4e"
+    "size": 17920818,
+    "sha256": "c6f16d8937c6cb711aab6e20906d2636adee2e48bc629fc8dd39d614dd7a0b6b"
   },
   "factory": {
-    "version": "1.0.22",
+    "version": "1.0.23",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-factory.bin",
-    "size": 19136512,
-    "sha256": "457994217249172a15a9e29d7c3e7ccc5cc415c1ec36f92ca493aaef03641944"
+    "size": 19529728,
+    "sha256": "d27839b5616d4c3428de2dde53efa8253490a87ff1b28e85e43a3f9a3d0f00bf"
   }
 }

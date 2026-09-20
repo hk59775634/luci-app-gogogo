@@ -1,5 +1,7 @@
-## 供创未来 1.0.22
+## 供创未来 1.0.23
 
-- 分流 DNS 的 server= 不再绑定网卡（去掉 @eth1/@GOGOGO），只写 IP 和分组标记
-- WAN 上全部可用 DNS 都写入 gogogo-vpn.conf 作为国内上游，不再只取一台，避免内网多 DNS 用途丢失
-- 固件含 luci-theme-gogogo 1.0.22、luci-app-gogogo 2026091606
+- 单槽设备在线升级 `sysupgrade` 后，更新页可选切换到双系统；不点也可继续使用和升级
+- 点「升级到双系统」会按顺序刷 factory 五卷并写入双系统 FIP（不改 BL2）
+- VPN 账号写入 U-Boot env，切换后可恢复
+- A/B 预留：内核 16 MiB、rootfs 29 MiB、共享 overlay 16 MiB
+- 固件含 luci-theme-gogogo 1.0.23、luci-app-gogogo 2026092000

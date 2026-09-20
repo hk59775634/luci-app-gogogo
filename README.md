@@ -18,7 +18,7 @@ make package/luci-app-gogogo/compile V=s
 make package/luci-theme-gogogo/compile V=s
 ```
 
-版本号规则见 [VERSION.md](./VERSION.md)。正式推送见 [PUSH.md](./PUSH.md)。
+版本号规则见 [VERSION.md](./VERSION.md)。正式推送见 [PUSH.md](./PUSH.md)。改分流 DNS / 保留地址前先看 [特别注意.md](./特别注意.md)。
 
 ## Release
 
