@@ -4,6 +4,6 @@
   "filename": "dual-boot-factory.bin",
   "path": "firmware/dual-boot-factory.bin",
   "size": 38141952,
-  "sha256": "926475d75b4d75c6dba377c73d1058af0a30e5aa958a60e6226b92d8925fad89",
+  "sha256": "01411ced589425b5f998e6086ad26b2f98a3ca0b2eeae92ded3fcdd3c978fd48",
   "url": "https://github.com/hk59775634/luci-app-gogogo/raw/main/firmware/dual-boot-factory.bin"
 }

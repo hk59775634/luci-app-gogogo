@@ -1,3 +1,10 @@
+## 供创未来 1.0.29
+
+- 修复写入双系统引导后仍显示「原厂引导」：内核没有 `dual_boot` sysfs，改为用 FIP 校验和 U-Boot `dual_boot.current_slot` 判定
+- 写 FIP 时不再先杀 uhttpd；写完后写入 `dual_boot.current_slot`，普通升级走 A/B 槽
+- 源码区 `firmware/dual-boot-factory.bin` 更新为 1.0.29 五卷 factory（含上述判定修复）
+- 固件含 luci-theme-gogogo 1.0.29、luci-app-gogogo 2026092100
+
 ## 供创未来 1.0.28
 
 - 大文件（双槽 factory）支持断点续传，停顿超时放宽，避免 12 条加速线反复从 0 重下
