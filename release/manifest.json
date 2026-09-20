@@ -1,19 +1,19 @@
 {
-  "tag": "v1.0.27",
-  "version": "1.0.27",
-  "notes": "## 供创未来 1.0.27\n\n- 修复双系统提示「没有可用于切换的 factory」：设备板名是 `mt7981-spim-snand-rfb`，与镜像 `nand` 板名未对齐\n- 固件含 luci-theme-gogogo 1.0.27、luci-app-gogogo 2026092002\n\n## 供创未来 1.0.26\n\n- 修复更新页一直停在「正在检查更新」：钉 GitHub 路由不再堵住检查；DoH curl 强制 HTTP/1.1 并硬杀超时；检查锁 180s 过期\n- 固件含 luci-theme-gogogo 1.0.26、luci-app-gogogo 2026092002\n\n## 供创未来 1.0.25\n\n- 接回双槽 factory：五卷 `kernel`/`rootfs`/`kernel2`/`rootfs2`/`rootfs_data`（16/29/16 MiB 预留）\n- 双槽 factory 固定放在仓库 `firmware/dual-boot-factory.bin`，更新页从源码区下载，Release 不再附带\n- 普通在线升级仍用单槽 `sysupgrade.bin`；切双系统才刷 factory\n- 固件含 luci-theme-gogogo 1.0.25、luci-app-gogogo 2026092001\n\n## 供创未来 1.0.24\n\n- 修复「确认升级到双系统」立即下载失败：factory 落到 `/tmp/nros-factory.bin`，通过 LuCI 下载白名单\n- GitHub 与加速域名解析后以 `/32` 钉 WAN，避免 VPN `0.0.0.0/1` 把更新流量吸进隧道\n- 固件含 luci-theme-gogogo 1.0.24、luci-app-gogogo 2026092001\n\n## 供创未来 1.0.23\n\n- 单槽设备在线升级 `sysupgrade` 后，更新页可选切换到双系统；不点也可继续使用和升级\n- 点「升级到双系统」会按顺序刷 factory 五卷并写入双系统 FIP（不改 BL2）\n- VPN 账号写入 U-Boot env，切换后可恢复\n- A/B 预留：内核 16 MiB、rootfs 29 MiB、共享 overlay 16 MiB\n- 固件含 luci-theme-gogogo 1.0.23、luci-app-gogogo 2026092000\n",
+  "tag": "v1.0.28",
+  "version": "1.0.28",
+  "notes": "## 供创未来 1.0.28\n\n- 大文件（双槽 factory）支持断点续传，停顿超时放宽，避免 12 条加速线反复从 0 重下\n- 固件含 luci-theme-gogogo 1.0.28、luci-app-gogogo 2026092002\n\n## 供创未来 1.0.27\n\n- 修复双系统提示「没有可用于切换的 factory」：设备板名是 `mt7981-spim-snand-rfb`，与镜像 `nand` 板名未对齐\n- 固件含 luci-theme-gogogo 1.0.27、luci-app-gogogo 2026092002\n\n## 供创未来 1.0.26\n\n- 修复更新页一直停在「正在检查更新」：钉 GitHub 路由不再堵住检查；DoH curl 强制 HTTP/1.1 并硬杀超时；检查锁 180s 过期\n- 固件含 luci-theme-gogogo 1.0.26、luci-app-gogogo 2026092002\n\n## 供创未来 1.0.25\n\n- 接回双槽 factory：五卷 `kernel`/`rootfs`/`kernel2`/`rootfs2`/`rootfs_data`（16/29/16 MiB 预留）\n- 双槽 factory 固定放在仓库 `firmware/dual-boot-factory.bin`，更新页从源码区下载，Release 不再附带\n- 普通在线升级仍用单槽 `sysupgrade.bin`；切双系统才刷 factory\n- 固件含 luci-theme-gogogo 1.0.25、luci-app-gogogo 2026092001\n\n## 供创未来 1.0.24\n\n- 修复「确认升级到双系统」立即下载失败：factory 落到 `/tmp/nros-factory.bin`，通过 LuCI 下载白名单\n- GitHub 与加速域名解析后以 `/32` 钉 WAN，避免 VPN `0.0.0.0/1` 把更新流量吸进隧道\n- 固件含 luci-theme-gogogo 1.0.24、luci-app-gogogo 2026092001\n\n## 供创未来 1.0.23\n\n- 单槽设备在线升级 `sysupgrade` 后，更新页可选切换到双系统；不点也可继续使用和升级\n- 点「升级到双系统」会按顺序刷 factory 五卷并写入双系统 FIP（不改 BL2）\n- VPN 账号写入 U-Boot env，切换后可恢复\n- A/B 预留：内核 16 MiB、rootfs 29 MiB、共享 overlay 16 MiB\n- 固件含 luci-theme-gogogo 1.0.23、luci-app-gogogo 2026092000\n",
   "gogogo": {
     "version": "2026092002",
     "filename": "luci-app-gogogo_2026092002_all.ipk",
-    "size": 103871,
-    "sha256": "5a7023e9bdaf379d9f04f1a454ba9a0a6ea297382fad7875c2b940e9136d9245"
+    "size": 103631,
+    "sha256": "abc656a7cdbf84822346f9ae30588cbb69b510f20c58795c134234b50e27cccf"
   },
   "firmware": {
-    "version": "1.0.27",
+    "version": "1.0.28",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-sysupgrade.bin",
     "size": 17920818,
-    "sha256": "177ed6870a5a9a6fc51af5b5193915a2448326cdf94c02ab2220b8f4e0876b85"
+    "sha256": "3a8b49861a7a0dc6bd3d1629204e8277b60804224fee06524a4e49458a630a43"
   },
   "factory": {
     "version": "ab-1",
