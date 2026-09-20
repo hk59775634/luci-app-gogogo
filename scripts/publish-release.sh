@@ -1,6 +1,7 @@
 #!/bin/sh
 # 生成 version.json + manifest.json，并可选上传客户端 ipk 与固件。
-# 完整更新（推荐）：--ipk --sysupgrade [--factory] --push
+# 完整更新（推荐）：--ipk --sysupgrade --push
+# 双槽 factory 固定在仓库 firmware/，不进 Release。
 # 用法见 PUSH.md
 
 set -e
@@ -19,6 +20,8 @@ _theme_ver() {
 
 PKG_NAME="$(_env_val CPE_PKG_NAME)"
 [ -n "$PKG_NAME" ] || PKG_NAME="luci-app-gogogo"
+REPO_SLUG="$(_env_val CPE_GITHUB_REPO)"
+[ -n "$REPO_SLUG" ] || REPO_SLUG="hk59775634/luci-app-gogogo"
 IPK=""
 SYSUPGRADE=""
 FACTORY=""
@@ -42,6 +45,7 @@ while [ $# -gt 0 ]; do
 		--push) PUSH_GIT=1; shift ;;
 		-h|--help)
 			echo "Usage: $0 --ipk <app.ipk> [--sysupgrade <sysupgrade.bin>] [--factory <factory.bin>] [--fip <fip.bin>] [--theme-ipk <theme.ipk>] [--fw-version X] [--push]" >&2
+			echo "  --factory  仅用于更新仓库 firmware/dual-boot-factory.bin（固定版本，不上传 Release）" >&2
 			exit 0
 			;;
 		*) echo "Unknown arg: $1" >&2; exit 1 ;;
@@ -108,11 +112,40 @@ fi
 FACT_NAME=""
 FACT_SHA=""
 FACT_SIZE=0
+FACT_URL=""
+FACT_VER="ab-1"
+FACTORY_JSON="$ROOT/firmware/factory.json"
+FACTORY_PINNED="$ROOT/firmware/dual-boot-factory.bin"
 if [ -n "$FACTORY" ]; then
-	FACT_NAME=$(basename "$FACTORY")
-	FACT_SHA=$(sha256sum "$FACTORY" | awk '{print $1}')
-	FACT_SIZE=$(wc -c <"$FACTORY" | tr -d ' ')
-	cp -f "$FACTORY" "$ROOT/release/$FACT_NAME"
+	mkdir -p "$ROOT/firmware"
+	cp -f "$FACTORY" "$FACTORY_PINNED"
+	FACT_NAME="dual-boot-factory.bin"
+	FACT_SHA=$(sha256sum "$FACTORY_PINNED" | awk '{print $1}')
+	FACT_SIZE=$(wc -c <"$FACTORY_PINNED" | tr -d ' ')
+	FACT_URL="https://github.com/${REPO_SLUG}/raw/main/firmware/dual-boot-factory.bin"
+	python3 - "$FACTORY_JSON" "$FACT_NAME" "$FACT_SHA" "$FACT_SIZE" "$BOARD" "$FACT_URL" <<'PY'
+import json, sys
+out, name, sha, size, board, url = sys.argv[1:]
+doc = {
+    "version": "ab-1",
+    "board": board,
+    "filename": name,
+    "path": "firmware/" + name,
+    "size": int(size or 0),
+    "sha256": sha,
+    "url": url,
+}
+with open(out, "w", encoding="utf-8") as f:
+    json.dump(doc, f, indent=2)
+    f.write("\n")
+PY
+	echo "pinned factory -> $FACTORY_PINNED"
+elif [ -f "$FACTORY_JSON" ]; then
+	FACT_NAME=$(python3 -c "import json; print(json.load(open('$FACTORY_JSON')).get('filename',''))")
+	FACT_SHA=$(python3 -c "import json; print(json.load(open('$FACTORY_JSON')).get('sha256',''))")
+	FACT_SIZE=$(python3 -c "import json; print(json.load(open('$FACTORY_JSON')).get('size',0))")
+	FACT_URL=$(python3 -c "import json; print(json.load(open('$FACTORY_JSON')).get('url',''))")
+	FACT_VER=$(python3 -c "import json; print(json.load(open('$FACTORY_JSON')).get('version','ab-1'))")
 fi
 
 FIP_NAME=""
@@ -129,10 +162,12 @@ fi
 
 MANIFEST_JSON="$ROOT/manifest/manifest.json"
 python3 - "$MANIFEST_JSON" "$FW_VER" "$APP_VER" "$IPK_NAME" "$IPK_SHA" "$IPK_SIZE" \
-	"$SYSU_NAME" "$SYSU_SHA" "$SYSU_SIZE" "$FACT_NAME" "$FACT_SHA" "$FACT_SIZE" "$BOARD" "$NOTES_FILE" <<'PY'
+	"$SYSU_NAME" "$SYSU_SHA" "$SYSU_SIZE" "$FACT_NAME" "$FACT_SHA" "$FACT_SIZE" "$BOARD" "$NOTES_FILE" \
+	"$FACT_URL" "$FACT_VER" <<'PY'
 import json, os, sys
 out, fw_ver, app_ver, ipk_name, ipk_sha, ipk_size = sys.argv[1:7]
-sysu_name, sysu_sha, sysu_size, fact_name, fact_sha, fact_size, board, notes_file = sys.argv[7:]
+sysu_name, sysu_sha, sysu_size, fact_name, fact_sha, fact_size, board, notes_file = sys.argv[7:15]
+fact_url, fact_ver = sys.argv[15:17]
 notes = ""
 if notes_file and os.path.isfile(notes_file):
     with open(notes_file, "r", encoding="utf-8") as nf:
@@ -158,11 +193,14 @@ if sysu_name:
     }
 if fact_name:
     doc["factory"] = {
-        "version": fw_ver,
+        "version": fact_ver or "ab-1",
         "board": board,
         "filename": fact_name,
         "size": int(fact_size or 0),
         "sha256": fact_sha,
+        "url": fact_url,
+        "repo_path": "firmware/" + fact_name,
+        "fixed": True,
     }
 with open(out, "w", encoding="utf-8") as f:
     json.dump(doc, f, ensure_ascii=False, indent=2)
@@ -173,18 +211,17 @@ cp -f "$MANIFEST_JSON" "$ROOT/release/manifest.json"
 echo "app version.json: $ROOT/manifest/version.json"
 echo "ui manifest.json: $MANIFEST_JSON"
 echo "app=$APP_VER firmware=$FW_VER tag=v${FW_VER}"
-echo "release/: version.json manifest.json $IPK_NAME ${SYSU_NAME} ${FACT_NAME} ${FIP_NAME} ${THEME_NAME}"
+echo "release/: version.json manifest.json $IPK_NAME ${SYSU_NAME} ${FIP_NAME} ${THEME_NAME}"
+[ -n "$FACT_NAME" ] && echo "factory (repo): firmware/${FACT_NAME} ${FACT_SHA}"
 
 if [ "$PUSH_GIT" != 1 ]; then
 	echo ""
 	echo "Local manifest/release ready. No git/github action (see PUSH.md)."
-	echo "Formal push: $0 --ipk '$IPK' --sysupgrade '$SYSUPGRADE' --factory '$FACTORY' --push"
+	echo "Formal push: $0 --ipk '$IPK' --sysupgrade '$SYSUPGRADE' --push"
 	exit 0
 fi
 
 TAG="v${FW_VER}"
-REPO_SLUG="$(_env_val CPE_GITHUB_REPO)"
-[ -n "$REPO_SLUG" ] || REPO_SLUG="hk59775634/luci-app-gogogo"
 
 git add -A
 git add -u
@@ -196,7 +233,6 @@ git push -f origin "$TAG"
 
 ASSETS="release/version.json release/manifest.json release/${IPK_NAME}"
 [ -n "$SYSU_NAME" ] && ASSETS="$ASSETS release/${SYSU_NAME}"
-[ -n "$FACT_NAME" ] && ASSETS="$ASSETS release/${FACT_NAME}"
 [ -n "$FIP_NAME" ] && ASSETS="$ASSETS release/${FIP_NAME}"
 [ -n "$THEME_NAME" ] && ASSETS="$ASSETS release/${THEME_NAME}"
 

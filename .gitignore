@@ -1,5 +1,6 @@
 *.ipk
 *.bin
+!firmware/*.bin
 *.o
 *.swp
 *~

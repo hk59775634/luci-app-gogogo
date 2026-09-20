@@ -1,3 +1,10 @@
+## 供创未来 1.0.25
+
+- 接回双槽 factory：五卷 `kernel`/`rootfs`/`kernel2`/`rootfs2`/`rootfs_data`（16/29/16 MiB 预留）
+- 双槽 factory 固定放在仓库 `firmware/dual-boot-factory.bin`，更新页从源码区下载，Release 不再附带
+- 普通在线升级仍用单槽 `sysupgrade.bin`；切双系统才刷 factory
+- 固件含 luci-theme-gogogo 1.0.25、luci-app-gogogo 2026092001
+
 ## 供创未来 1.0.24
 
 - 修复「确认升级到双系统」立即下载失败：factory 落到 `/tmp/nros-factory.bin`，通过 LuCI 下载白名单

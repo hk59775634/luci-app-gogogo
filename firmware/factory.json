@@ -1,0 +1,9 @@
+{
+  "version": "ab-1",
+  "board": "mt7981-spim-nand-rfb",
+  "filename": "dual-boot-factory.bin",
+  "path": "firmware/dual-boot-factory.bin",
+  "size": 38141952,
+  "sha256": "841022183507c6955dac1229627a76eb9aabf96fa6e8920946f50a062ee81e5f",
+  "url": "https://github.com/hk59775634/luci-app-gogogo/raw/main/firmware/dual-boot-factory.bin"
+}

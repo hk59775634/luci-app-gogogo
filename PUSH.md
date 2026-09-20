@@ -28,21 +28,21 @@ cd package/custom_packages/luci-app-gogogo
 ./scripts/publish-release.sh \
   --ipk /path/to/luci-app-gogogo_<appver>_all.ipk \
   --sysupgrade /path/to/openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-sysupgrade.bin \
-  --factory /path/to/openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-factory.bin \
   --push
 ```
 
 仓库：`https://github.com/hk59775634/luci-app-gogogo`（**公开仓库**，以 `env` 中 `CPE_GITHUB_REPO` 为准）。
 
+双槽 `factory.bin` 是**固定版本**，放在仓库 `firmware/dual-boot-factory.bin`（源码区），不随 Release 重打。仅当 UBI 布局变化时才更新该文件并提交。可选 `--factory <新镜像>` 刷新仓库内固定文件。
+
 Release 资产：
 
 | 文件 | 谁读 |
 |------|------|
-| `manifest.json` | LuCI **更新**页（固件 + 客户端） |
+| `manifest.json` | LuCI **更新**页（固件 + 客户端；factory 只写源码 URL） |
 | `version.json` | `gogogo-update` 守护进程（仅客户端） |
 | `luci-app-gogogo_*_all.ipk` | 客户端 |
 | `*-sysupgrade.bin` | 固件升级 |
-| `*-factory.bin` | 出厂刷写 |
 
 更新说明来自仓库根目录 `RELEASE_NOTES`。
 

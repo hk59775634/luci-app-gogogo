@@ -30,7 +30,8 @@ make package/luci-theme-gogogo/compile V=s
 | `version.json` | 设备守护进程读取：仅客户端 |
 | `luci-app-gogogo_*_all.ipk` | 客户端软件包 |
 | `*-squashfs-sysupgrade.bin` | MT7981 可升级固件 |
-| `*-squashfs-factory.bin` | MT7981 出厂镜像 |
+
+双槽 factory 固定在仓库 [`firmware/dual-boot-factory.bin`](firmware/dual-boot-factory.bin)，不进 Release。
 
 更新说明只维护一份：仓库根目录 `RELEASE_NOTES`。
 
