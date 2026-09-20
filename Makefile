@@ -113,6 +113,7 @@ define Build/Prepare
 		$(CPE_STAGING_DIR)/usr/sbin/gogogo-luci-diag \
 		$(CPE_STAGING_DIR)/usr/sbin/gogogo-luci-status \
 		$(CPE_STAGING_DIR)/usr/sbin/gogogo-update \
+		$(CPE_STAGING_DIR)/usr/sbin/gogogo-pin-github \
 		$(CPE_STAGING_DIR)/usr/sbin/gogogo-route-guard \
 		$(CPE_STAGING_DIR)/etc/init.d/gogogo \
 		$(CPE_STAGING_DIR)/etc/hotplug.d/iface/99-gogogo

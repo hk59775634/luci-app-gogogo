@@ -1,0 +1,190 @@
+#!/bin/sh
+# Pin GitHub and accel-mirror IPs as /32 via WAN.
+# VPN 0.0.0.0/1 + 128.0.0.0/1 would otherwise steal update traffic.
+
+[ -f /usr/share/gogogo/defaults.sh ] && . /usr/share/gogogo/defaults.sh
+[ -f /usr/share/gogogo/curl-resolve.sh ] && . /usr/share/gogogo/curl-resolve.sh
+[ -f /lib/functions/network.sh ] && . /lib/functions/network.sh
+
+CACHE="/tmp/gogogo-github-pin.ips"
+STAMP="/tmp/gogogo-github-pin.stamp"
+LOCK="/tmp/gogogo-github-pin.lock"
+TTL="${CPE_GITHUB_PIN_TTL:-600}"
+METRIC="${CPE_WAN_ROUTE_METRIC:-100}"
+
+wan_dev=
+gw=
+
+_wan_info() {
+	local NET_IF
+	wan_dev=
+	gw=
+	if type network_find_wan >/dev/null 2>&1; then
+		network_flush_cache 2>/dev/null
+		network_find_wan NET_IF 2>/dev/null || NET_IF="wan"
+		network_get_device wan_dev "${NET_IF}" 2>/dev/null
+		[ -z "$wan_dev" ] && network_get_physdev wan_dev "${NET_IF}" 2>/dev/null
+		[ -z "$wan_dev" ] && wan_dev=$(uci -q get "network.${NET_IF}.device")
+		[ -z "$wan_dev" ] && wan_dev=$(uci -q get "network.${NET_IF}.ifname")
+		network_get_gateway gw "${NET_IF}" 2>/dev/null
+	fi
+	[ -n "$wan_dev" ] || wan_dev=$(ubus call network.interface.wan status 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null)
+	[ -n "$gw" ] || gw=$(ubus call network.interface.wan status 2>/dev/null | jsonfilter -e '@.route[0].nexthop' 2>/dev/null)
+	case "$wan_dev" in
+		""|*[!A-Za-z0-9._-]*) wan_dev= ;;
+	esac
+	case "$gw" in
+		""|*[!0-9.]*) gw= ;;
+	esac
+	[ -n "$wan_dev" ]
+}
+
+_ok_ip() {
+	local ip="$1" o1 o2
+	case "$ip" in
+		""|*[!0-9.]*) return 1 ;;
+	esac
+	o1=${ip%%.*}
+	o2=${ip#*.}
+	o2=${o2%%.*}
+	[ "$o1" -ge 1 ] 2>/dev/null && [ "$o1" -le 223 ] 2>/dev/null || return 1
+	[ "$o2" -ge 0 ] 2>/dev/null && [ "$o2" -le 255 ] 2>/dev/null || return 1
+	case "$ip" in
+		10.*|127.*|169.254.*|192.168.*) return 1 ;;
+		172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) return 1 ;;
+	esac
+	if [ "$o1" -eq 100 ] && [ "$o2" -ge 64 ] && [ "$o2" -le 127 ]; then
+		return 1
+	fi
+	return 0
+}
+
+_host_from_url() {
+	echo "$1" | sed -e 's|^[a-zA-Z]*://||' -e 's|/.*||' -e 's|:.*||'
+}
+
+_hosts() {
+	printf '%s\n' \
+		github.com \
+		api.github.com \
+		objects.githubusercontent.com \
+		release-assets.githubusercontent.com \
+		github-releases.githubusercontent.com \
+		raw.githubusercontent.com \
+		cdn.jsdelivr.net \
+		kkgithub.com
+	echo "${CPE_DOH_FORCE_HOSTS:-}" | tr ',' '\n'
+	echo "${CPE_GITHUB_MIRROR_PREFIXES:-}" | tr ',' '\n' | while IFS= read -r p; do
+		p=$(echo "$p" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+		[ -n "$p" ] || continue
+		_host_from_url "$p"
+	done
+	[ -n "${CPE_GITHUB_MIRROR:-}" ] && _host_from_url "$CPE_GITHUB_MIRROR"
+}
+
+_uniq_hosts() {
+	_hosts | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' | \
+		awk 'NF && $0 !~ /[^a-z0-9.-]/ && !seen[$0]++ { print }'
+}
+
+_resolve() {
+	local host="$1" ip
+	[ -n "$host" ] || return 1
+	if type gogogo_resolve_host >/dev/null 2>&1; then
+		ip=$(gogogo_resolve_host "$host" 2>/dev/null)
+		_ok_ip "$ip" && echo "$ip" && return 0
+	fi
+	if [ -x /usr/sbin/gogogo-dns-probe ]; then
+		ip=$(/usr/sbin/gogogo-dns-probe resolve "$host" 2>/dev/null)
+		_ok_ip "$ip" && echo "$ip" && return 0
+	fi
+	return 1
+}
+
+_pin_ip() {
+	local ip="$1"
+	_ok_ip "$ip" || return 1
+	[ -n "$wan_dev" ] || return 1
+	if [ -n "$gw" ]; then
+		ip route replace "${ip}/32" via "$gw" dev "$wan_dev" metric "$METRIC" 2>/dev/null
+	else
+		ip route replace "${ip}/32" dev "$wan_dev" metric "$METRIC" 2>/dev/null
+	fi
+}
+
+_apply_cache() {
+	local ip n=0
+	_wan_info || return 1
+	[ -s "$CACHE" ] || return 1
+	while IFS= read -r ip; do
+		_pin_ip "$ip" && n=$((n + 1))
+	done < "$CACHE"
+	[ "$n" -gt 0 ]
+}
+
+_stamp_fresh() {
+	local now ts gw0 dev0
+	[ -s "$CACHE" ] && [ -f "$STAMP" ] || return 1
+	_wan_info || return 1
+	read -r ts gw0 dev0 < "$STAMP"
+	[ "$dev0" = "$wan_dev" ] || return 1
+	[ "${gw0:-none}" = "${gw:-none}" ] || return 1
+	now=$(date +%s)
+	[ -n "$ts" ] && [ $((now - ts)) -lt "$TTL" ]
+}
+
+_refresh() {
+	local host ip tmp n=0
+	_wan_info || return 1
+	tmp="${CACHE}.$$"
+	: > "$tmp"
+	for host in $(_uniq_hosts); do
+		ip=$(_resolve "$host") || continue
+		echo "$ip" >> "$tmp"
+		_pin_ip "$ip" && n=$((n + 1))
+	done
+	awk 'NF && !seen[$0]++ { print }' "$tmp" > "$CACHE"
+	rm -f "$tmp"
+	printf '%s %s %s\n' "$(date +%s)" "${gw:-none}" "$wan_dev" > "$STAMP"
+	[ "$n" -gt 0 ] && logger -t gogogo-pin-github "pinned $n github/accel /32 via WAN dev=$wan_dev gw=${gw:-none}"
+	return 0
+}
+
+_refresh_locked() {
+	(
+		flock -n 8 || exit 0
+		_refresh
+	) 8>"$LOCK"
+}
+
+_ensure() {
+	if _stamp_fresh; then
+		_apply_cache
+		return 0
+	fi
+	_apply_cache
+	_refresh_locked
+}
+
+case "${1:-ensure}" in
+	apply)
+		_apply_cache
+		;;
+	refresh)
+		if _stamp_fresh; then
+			_apply_cache
+			exit 0
+		fi
+		_refresh_locked
+		;;
+	iface)
+		_wan_info && echo "$wan_dev"
+		;;
+	ensure|"")
+		_ensure
+		;;
+	*)
+		echo "Usage: $0 [ensure|apply|refresh|iface]" >&2
+		exit 2
+		;;
+esac

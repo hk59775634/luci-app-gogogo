@@ -270,6 +270,10 @@ _pin_reserved_to_wan() {
 		ok=1
 	done
 	[ "$ok" = 1 ] && logger -t gogogo "pin reserved to WAN dev=$wan_dev gw=${gw:-none}"
+	if [ -x /usr/sbin/gogogo-pin-github ]; then
+		/usr/sbin/gogogo-pin-github apply >/dev/null 2>&1
+		/usr/sbin/gogogo-pin-github refresh >/dev/null 2>&1 &
+	fi
 }
 
 _ensure_policy_reserved_rules() {

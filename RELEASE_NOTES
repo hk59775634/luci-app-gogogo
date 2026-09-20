@@ -1,3 +1,9 @@
+## 供创未来 1.0.24
+
+- 修复「确认升级到双系统」立即下载失败：factory 落到 `/tmp/nros-factory.bin`，通过 LuCI 下载白名单
+- GitHub 与加速域名解析后以 `/32` 钉 WAN，避免 VPN `0.0.0.0/1` 把更新流量吸进隧道
+- 固件含 luci-theme-gogogo 1.0.24、luci-app-gogogo 2026092001
+
 ## 供创未来 1.0.23
 
 - 单槽设备在线升级 `sysupgrade` 后，更新页可选切换到双系统；不点也可继续使用和升级
