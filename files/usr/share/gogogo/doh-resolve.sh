@@ -8,6 +8,32 @@ DOH_TENCENT_IP="${DOH_TENCENT_IP:-119.29.29.29}"
 DOH_TENCENT_IP2="${DOH_TENCENT_IP2:-119.28.28.28}"
 DOH_CURL_TIMEOUT="${DOH_CURL_TIMEOUT:-5}"
 
+# wolfSSL + nghttp2 can stall in poll so curl --max-time never fires.
+_doh_curl() {
+	local dest="$1" pid i lim rc
+	shift
+	rm -f "$dest"
+	curl -4 --http1.1 -fsSL --connect-timeout "$DOH_CURL_TIMEOUT" \
+		--max-time "$DOH_CURL_TIMEOUT" -o "$dest" "$@" >/dev/null 2>&1 &
+	pid=$!
+	i=0
+	lim=$((DOH_CURL_TIMEOUT + 2))
+	while [ "$i" -lt "$lim" ]; do
+		if [ ! -d "/proc/$pid" ]; then
+			wait "$pid"
+			rc=$?
+			[ "$rc" -eq 0 ] && [ -s "$dest" ]
+			return $?
+		fi
+		i=$((i + 1))
+		sleep 1
+	done
+	kill -9 "$pid" >/dev/null 2>&1
+	wait "$pid" >/dev/null 2>&1
+	rm -f "$dest"
+	return 1
+}
+
 _doh_extract_a() {
 	local json="$1" ip
 	[ -n "$json" ] || return 1
@@ -24,40 +50,49 @@ _doh_extract_a() {
 
 # 阿里 HTTPS DoH
 _doh_query_ali() {
-	local host="$1" doh_ip="$2" json
+	local host="$1" doh_ip="$2" json dest
 	[ -n "$host" ] || return 1
 	command -v curl >/dev/null 2>&1 || return 1
 	[ -n "$doh_ip" ] || doh_ip="$DOH_ALI_IP"
-	json=$(curl -fsSL --connect-timeout "$DOH_CURL_TIMEOUT" --max-time "$DOH_CURL_TIMEOUT" \
+	dest="/tmp/gogogo-doh-ali.$$"
+	_doh_curl "$dest" \
 		--resolve "${DOH_ALI_HOST}:443:${doh_ip}" \
-		"https://${DOH_ALI_HOST}/resolve?name=${host}&type=1" \
 		-H "Accept: application/dns-json" \
-		-H "Host: ${DOH_ALI_HOST}" 2>/dev/null) || return 1
+		-H "Host: ${DOH_ALI_HOST}" \
+		-- "https://${DOH_ALI_HOST}/resolve?name=${host}&type=1" || return 1
+	json=$(cat "$dest" 2>/dev/null)
+	rm -f "$dest"
 	_doh_extract_a "$json"
 }
 
 # 阿里 HTTP DNS（纯 IP，无 TLS，作 HTTPS 失败时的后备）
 _doh_query_ali_http() {
-	local host="$1" doh_ip="$2" json
+	local host="$1" doh_ip="$2" json dest
 	[ -n "$host" ] || return 1
 	command -v curl >/dev/null 2>&1 || return 1
 	[ -n "$doh_ip" ] || doh_ip="$DOH_ALI_IP"
-	json=$(curl -fsSL --connect-timeout "$DOH_CURL_TIMEOUT" --max-time "$DOH_CURL_TIMEOUT" \
-		"http://${doh_ip}/resolve?name=${host}&type=1" 2>/dev/null) || return 1
+	dest="/tmp/gogogo-doh-alihttp.$$"
+	_doh_curl "$dest" \
+		-- "http://${doh_ip}/resolve?name=${host}&type=1" || return 1
+	json=$(cat "$dest" 2>/dev/null)
+	rm -f "$dest"
 	_doh_extract_a "$json"
 }
 
 # 腾讯 DNSPod：https://doh.pub/dns-query?name=HOST&type=A
 _doh_query_tencent() {
-	local host="$1" doh_ip="$2" json
+	local host="$1" doh_ip="$2" json dest
 	[ -n "$host" ] || return 1
 	command -v curl >/dev/null 2>&1 || return 1
 	[ -n "$doh_ip" ] || doh_ip="$DOH_TENCENT_IP"
-	json=$(curl -fsSL --connect-timeout "$DOH_CURL_TIMEOUT" --max-time "$DOH_CURL_TIMEOUT" \
+	dest="/tmp/gogogo-doh-tencent.$$"
+	_doh_curl "$dest" \
 		--resolve "${DOH_TENCENT_HOST}:443:${doh_ip}" \
-		"https://${DOH_TENCENT_HOST}/dns-query?name=${host}&type=A" \
 		-H "Accept: application/dns-json" \
-		-H "Host: ${DOH_TENCENT_HOST}" 2>/dev/null) || return 1
+		-H "Host: ${DOH_TENCENT_HOST}" \
+		-- "https://${DOH_TENCENT_HOST}/dns-query?name=${host}&type=A" || return 1
+	json=$(cat "$dest" 2>/dev/null)
+	rm -f "$dest"
 	_doh_extract_a "$json"
 }
 

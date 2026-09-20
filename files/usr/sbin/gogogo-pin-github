@@ -158,12 +158,10 @@ _refresh_locked() {
 }
 
 _ensure() {
-	if _stamp_fresh; then
-		_apply_cache
-		return 0
-	fi
 	_apply_cache
-	_refresh_locked
+	_stamp_fresh && return 0
+	# Refresh is exclusive via flock -n. Do not block LuCI / nros-update-check.
+	( _refresh_locked ) >/dev/null 2>&1 &
 }
 
 case "${1:-ensure}" in

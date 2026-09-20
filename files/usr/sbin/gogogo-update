@@ -285,7 +285,10 @@ _download_ipk() {
 _check_update() {
 	local lines manifest src_hint win_url new url sha cur
 
-	[ -x /usr/sbin/gogogo-pin-github ] && /usr/sbin/gogogo-pin-github >/dev/null 2>&1
+	if [ -x /usr/sbin/gogogo-pin-github ]; then
+		/usr/sbin/gogogo-pin-github apply >/dev/null 2>&1
+		/usr/sbin/gogogo-pin-github refresh >/dev/null 2>&1 &
+	fi
 
 	[ "${CPE_AUTO_UPDATE:-0}" = "1" ] || {
 		_log "auto update disabled"
