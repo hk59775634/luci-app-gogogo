@@ -1,3 +1,8 @@
+## 供创未来 1.0.27
+
+- 修复双系统提示「没有可用于切换的 factory」：设备板名是 `mt7981-spim-snand-rfb`，与镜像 `nand` 板名未对齐
+- 固件含 luci-theme-gogogo 1.0.27、luci-app-gogogo 2026092002
+
 ## 供创未来 1.0.26
 
 - 修复更新页一直停在「正在检查更新」：钉 GitHub 路由不再堵住检查；DoH curl 强制 HTTP/1.1 并硬杀超时；检查锁 180s 过期
