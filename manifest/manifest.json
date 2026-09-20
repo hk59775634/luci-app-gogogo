@@ -1,25 +1,28 @@
 {
-  "tag": "v1.0.24",
-  "version": "1.0.24",
-  "notes": "## 供创未来 1.0.24\n\n- 修复「确认升级到双系统」立即下载失败：factory 落到 `/tmp/nros-factory.bin`，通过 LuCI 下载白名单\n- GitHub 与加速域名解析后以 `/32` 钉 WAN，避免 VPN `0.0.0.0/1` 把更新流量吸进隧道\n- 固件含 luci-theme-gogogo 1.0.24、luci-app-gogogo 2026092001\n\n## 供创未来 1.0.23\n\n- 单槽设备在线升级 `sysupgrade` 后，更新页可选切换到双系统；不点也可继续使用和升级\n- 点「升级到双系统」会按顺序刷 factory 五卷并写入双系统 FIP（不改 BL2）\n- VPN 账号写入 U-Boot env，切换后可恢复\n- A/B 预留：内核 16 MiB、rootfs 29 MiB、共享 overlay 16 MiB\n- 固件含 luci-theme-gogogo 1.0.23、luci-app-gogogo 2026092000\n",
+  "tag": "v1.0.25",
+  "version": "1.0.25",
+  "notes": "## 供创未来 1.0.25\n\n- 接回双槽 factory：五卷 `kernel`/`rootfs`/`kernel2`/`rootfs2`/`rootfs_data`（16/29/16 MiB 预留）\n- 双槽 factory 固定放在仓库 `firmware/dual-boot-factory.bin`，更新页从源码区下载，Release 不再附带\n- 普通在线升级仍用单槽 `sysupgrade.bin`；切双系统才刷 factory\n- 固件含 luci-theme-gogogo 1.0.25、luci-app-gogogo 2026092001\n\n## 供创未来 1.0.24\n\n- 修复「确认升级到双系统」立即下载失败：factory 落到 `/tmp/nros-factory.bin`，通过 LuCI 下载白名单\n- GitHub 与加速域名解析后以 `/32` 钉 WAN，避免 VPN `0.0.0.0/1` 把更新流量吸进隧道\n- 固件含 luci-theme-gogogo 1.0.24、luci-app-gogogo 2026092001\n\n## 供创未来 1.0.23\n\n- 单槽设备在线升级 `sysupgrade` 后，更新页可选切换到双系统；不点也可继续使用和升级\n- 点「升级到双系统」会按顺序刷 factory 五卷并写入双系统 FIP（不改 BL2）\n- VPN 账号写入 U-Boot env，切换后可恢复\n- A/B 预留：内核 16 MiB、rootfs 29 MiB、共享 overlay 16 MiB\n- 固件含 luci-theme-gogogo 1.0.23、luci-app-gogogo 2026092000\n",
   "gogogo": {
     "version": "2026092001",
     "filename": "luci-app-gogogo_2026092001_all.ipk",
-    "size": 103199,
-    "sha256": "5e31e4b5ec0f1fe66a1720f52f629c75ed5a7fc1c0c3ecbe887d4ae4574429dd"
+    "size": 103342,
+    "sha256": "aea249dae8c8d1ef574218cfa3b886ae3eac446b2504f49db85c5d9edad6ebc7"
   },
   "firmware": {
-    "version": "1.0.24",
+    "version": "1.0.25",
     "board": "mt7981-spim-nand-rfb",
     "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-sysupgrade.bin",
     "size": 17920818,
-    "sha256": "20bc8f3d6f3b06d921dc2321c11e01acde3f80c9e8af7a789e42f3eb21b89a8f"
+    "sha256": "a04c64454aebd5014125e71aa0b07f4cdec4381cc8a992f9cee4494e61af9266"
   },
   "factory": {
-    "version": "1.0.24",
+    "version": "ab-1",
     "board": "mt7981-spim-nand-rfb",
-    "filename": "openwrt-mediatek-mt7981-mt7981-spim-nand-rfb-squashfs-factory.bin",
-    "size": 19529728,
-    "sha256": "d9f904378e46b956ee34b0eece2a2821b3bb1f0ed1c697fde943841dff799ad2"
+    "filename": "dual-boot-factory.bin",
+    "size": 38141952,
+    "sha256": "841022183507c6955dac1229627a76eb9aabf96fa6e8920946f50a062ee81e5f",
+    "url": "https://github.com/hk59775634/luci-app-gogogo/raw/main/firmware/dual-boot-factory.bin",
+    "repo_path": "firmware/dual-boot-factory.bin",
+    "fixed": true
   }
 }
